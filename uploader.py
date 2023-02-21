@@ -17,6 +17,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("-f", "--filepath", help="This file will be used for ingesting records")
     parser.add_argument("-k", "--kmsId", help="This will be used for updating the database")
+    parser.add_argument("-c", "--cost", help="Print the cost of uploading the file in filepath", action=argparse.BooleanOptionalAction)
     args = parser.parse_args()
 
     session = boto3.Session()
@@ -35,9 +36,12 @@ if __name__ == '__main__':
         # csv_ingestion_example.update_database(args.kmsId)
 
     if args.filepath is not None:
+        # filepath = "data/unzipped/allsites_month/FC/157/2M4Y4111FK/temp.csv"
         path_list = args.filepath.split('/')
-        assert len(path_list) == 5
         device_id = path_list[-2]
-        ppt_id = path_list[2].split('_')[0]
+        ppt_id = path_list[-4].lower() + path_list[-3]
         assert len(ppt_id) == 5
+    if args.cost:
+        ingestor.estimate_csv_write_cost(participant_id=ppt_id, device_id=device_id, filepath=args.filepath)
+    if args.cost is None:
         ingestor.write_records_with_common_attributes(participant_id=ppt_id, device_id=device_id, filepath=args.filepath)
