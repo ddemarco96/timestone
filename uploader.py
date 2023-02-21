@@ -36,7 +36,7 @@ if __name__ == '__main__':
         # csv_ingestion_example.update_database(args.kmsId)
 
     if args.filepath is not None:
-        # filepath = "data/unzipped/allsites_month/FC/157/2M4Y4111FK/temp.csv"
+        # filepath = "data/unzipped/allsites_month/FC/157/12345ABCDE/temp.csv"
         path_list = args.filepath.split('/')
         device_id = path_list[-2]
         ppt_id = path_list[-4].lower() + path_list[-3]

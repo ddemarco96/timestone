@@ -58,6 +58,7 @@ class CSVIngestor:
         2                1630454400089  0.649668 -0.063722  0.691173
 
     """
+
     def __init__(self, client):
         self.client = client
 
@@ -89,22 +90,38 @@ class CSVIngestor:
 
     def write_records_with_common_attributes(self, participant_id, device_id, filepath):
         print(f"Writing records and extracting common attributes for {participant_id}...")
-        common_attributes = self.get_common_attrs(filepath)
-
+        common_attributes = self.get_common_attrs(filepath, participant_id, device_id)
         # reformat CSV to Records series
         df = self.get_timestream_df(filepath)
 
+        batch_size = self.get_optimal_batch_size(df, common_attributes)
 
+        num_batches = int(df.shape[0] // batch_size + 1)
+        print(f"Writing {num_batches} batches of {batch_size} records each...")
+        for i in range(num_batches):
+            start = i * batch_size
+            end = start + batch_size
+            # returns a list of dicts...[{Time: val1, MeasureValue: val2}, ...]
+            records = df[start:end].to_dict(orient='records')
 
+            if i < num_batches - 1:
+                # sanity check batches are the right size except for final batch which may be smaller
+                assert batch_size >= len(records) > 0.9 * batch_size
+            self.submit_batch(records, common_attributes, i + 1)
 
-        records = []
-        for index, row in df.iterrows():
-            record = {
-                'MeasureValue': str(row[1]),
-                'Time': str(self._current_milli_time()),
-                'TimeUnit': 'MILLISECONDS',
-            }
-            records.append(record)
+            # self.client.write_records(DatabaseName=DATABASE_NAME,
+            #                           TableName=TABLE_NAME,
+            #                           Records=records,
+            #                           CommonAttributes=common_attributes)
+
+    def submit_batch(self, records, common_attributes, counter):
+        try:
+            result = self.client.write_records(DatabaseName=DATABASE_NAME, TableName=TABLE_NAME,
+                                               Records=records, CommonAttributes=common_attributes)
+            print("Processed batch [%d]. WriteRecords Status: [%s]" % (counter,
+                                                                       result['ResponseMetadata']['HTTPStatusCode']))
+        except Exception as err:
+            print("Error:", err)
 
     def get_optimal_batch_size(self, df, common_attributes, verbose=False):
         """
@@ -115,7 +132,7 @@ class CSVIngestor:
         """
         write_max = 1000
         common_attr_size = getsizeof(common_attributes)
-        avg_row_size = df.memory_usage(deep=True).sum() / df.shape[0]
+        avg_row_size = round(df.memory_usage(deep=True).sum() / df.shape[0])
         batch_size = (write_max - common_attr_size) // avg_row_size
 
         if verbose:
