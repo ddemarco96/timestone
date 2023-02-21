@@ -132,5 +132,8 @@ class CSVIngestor:
 
         num_writes_in_df = df.shape[0] // batch_size + 1
 
+        cost = num_writes_in_df * (0.50 / 1000000)
+
         # price is $0.50 / 1M writes
-        print(f"Estimated cost for {filepath}: ${num_writes_in_df * (0.50 / 1000000)}")
+        print(f"Estimated cost for {filepath}: ${cost}")
+        return cost
