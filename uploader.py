@@ -7,10 +7,43 @@ For now we expect data to be nested in the format:
 """
 
 import boto3
+import shutil
 import argparse
 
 from csv_ingestor import CSVIngestor
 from botocore.config import Config
+import os
+import zipfile
+
+
+def unzip_walk(filepath, cleanup=True):
+    """
+    1. Find the parent dir of the filepath
+    2. Unzip the file
+    3. Move the contents to parent_dir/unzipped
+    4. return the list of file paths to any eda, temp, or acc csvs files in any dir within the unzipped dir
+    """
+    # 1. Find the parent dir of the filepath
+    grandparent_dir = os.path.dirname(os.path.dirname(filepath))
+    unzipped_dir = os.path.join(grandparent_dir, "unzipped")
+    if not os.path.exists(unzipped_dir):
+        os.mkdir(unzipped_dir)
+    # 2/3. Unzip the file and move all to unzipped_dir
+    with zipfile.ZipFile(filepath, 'r') as zip_ref:
+        zip_ref.extractall(unzipped_dir)
+    # 4. return the list of file paths to any eda, temp, or acc csvs files in any dir within the unzipped dir
+    file_paths = []
+    for root, dirs, files in os.walk(unzipped_dir):
+        for file in files:
+            if file.endswith(".csv"):
+                file_paths.append(os.path.join(root, file))
+    # cleanup by removing the unzipped dir if you want
+    if cleanup:
+        shutil.rmtree(unzipped_dir)
+    return file_paths
+
+
+
 
 if __name__ == '__main__':
 
@@ -45,3 +78,6 @@ if __name__ == '__main__':
         ingestor.estimate_csv_write_cost(participant_id=ppt_id, device_id=device_id, filepath=args.filepath)
     if args.cost is None:
         ingestor.write_records_with_common_attributes(participant_id=ppt_id, device_id=device_id, filepath=args.filepath)
+
+
+

@@ -4,6 +4,7 @@ from unittest.mock import patch
 from io import StringIO
 
 from csv_ingestor import CSVIngestor
+from uploader import unzip_walk
 
 
 class TestGetFileInfo(TestCase):
@@ -65,4 +66,30 @@ class TestGetFileInfo(TestCase):
             msg = f"Writing records and extracting common attributes for {self.ppt_id}..."
             self.assertIn(msg, fake_out.getvalue())
 
+
+    def test_unzip_walk(self):
+        # with patch('sys.stdout', new=StringIO()) as fake_out:
+        test_filepath = "test_data/zips/Sensors_U02_ALLSITES_20190801_20190831.zip"
+        file_paths = unzip_walk(test_filepath, cleanup=True)
+        expected_paths = [
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/temp.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/acc.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/eda.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/ABCDE12345/temp.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/ABCDE12345/acc.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/ABCDE12345/eda.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/12345ABCDE/temp.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/12345ABCDE/acc.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/12345ABCDE/eda.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/U01/096/2M4Y4111FK/temp.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/U01/096/2M4Y4111FK/acc.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/U01/096/2M4Y4111FK/eda.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/U01/157/ABCDE12345/temp.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/U01/157/ABCDE12345/acc.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/U01/157/ABCDE12345/eda.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/U01/157/12345ABCDE/temp.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/U01/157/12345ABCDE/acc.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/U01/157/12345ABCDE/eda.csv',
+            ]
+        self.assertTrue(all([path in file_paths for path in expected_paths]))
 main()
