@@ -1,3 +1,5 @@
+import os
+import subprocess
 import time
 import pandas as pd
 from sys import getsizeof
@@ -62,17 +64,19 @@ class CSVIngestor:
     def __init__(self, client):
         self.client = client
 
-    def get_common_attrs(self, filepath, participant_id, device_id):
+    def get_common_attrs(self, file_path, participant_id, device_id):
         dimensions = [
             {'Name': 'ppt_id', 'Value': participant_id},
             {'Name': 'device_id', 'Value': device_id}
         ]
 
         measure_name = None
-        if "eda.csv" in filepath:
+        if "eda.csv" in file_path:
             measure_name = "eda_microS"
-        elif "temp.csv" in filepath:
+        elif "temp.csv" in file_path:
             measure_name = "temp_degC"
+        elif "acc.csv" in file_path:
+            measure_name = "acc_g"
         assert measure_name is not None
 
         common_attributes = {
@@ -82,17 +86,25 @@ class CSVIngestor:
         }
         return common_attributes
 
-    def get_timestream_df(self, filepath):
+    def get_timestream_df(self, file_path):
         # reformat CSV to Records series
-        df = pd.read_csv(filepath)
+        if "acc.csv" in file_path:
+            # check if acc_reformatted.csv exists in the same directory
+            # if it doesn't exist, create it
+
+            df = pd.read_csv(file_path)
+            df.rename(columns={df.columns[0]: "Time", df.columns[1]: "x", df.columns[2]: "y", df.columns[3]: "z"},
+                      inplace=True)
+            return df
+        df = pd.read_csv(file_path)
         df.rename(columns={df.columns[0]: "Time", df.columns[1]: "MeasureValue"}, inplace=True)
         return df
 
-    def write_records_with_common_attributes(self, participant_id, device_id, filepath):
+    def write_records_with_common_attributes(self, participant_id, device_id, file_path):
         print(f"Writing records and extracting common attributes for {participant_id}...")
-        common_attributes = self.get_common_attrs(filepath, participant_id, device_id)
+        common_attributes = self.get_common_attrs(file_path, participant_id, device_id)
         # reformat CSV to Records series
-        df = self.get_timestream_df(filepath)
+        df = self.get_timestream_df(file_path)
 
         batch_size = self.get_optimal_batch_size(df, common_attributes)
 
@@ -102,6 +114,29 @@ class CSVIngestor:
             start = i * batch_size
             end = start + batch_size
             # returns a list of dicts...[{Time: val1, MeasureValue: val2}, ...]
+            """
+            unbatched temp per record
+                time: 8 bytes
+                dim1: 11 bytes ('ppt_id' + 'fc155')
+                dim2: 16 bytes ('dev_id' + 'ABCDE12345')
+                measure_name: 9 bytes ('temp_degC')
+                                        eda_microS
+                measure_value: 8 bytes
+                    total: 52 bytes / record
+                1 write = 1kb//52b = 19 records 
+                    
+            batched temp per record
+                1kb - common: 11 + 16 + 9 = 36 bytes
+                
+                time + measure_value: 16 bytes
+                    total: 16 bytes / record + common
+                    1 write = (1kb-36)//16b = 60 records
+                    
+                
+                
+            
+            
+            """
             records = df[start:end].to_dict(orient='records')
 
             if i < num_batches - 1:
@@ -123,34 +158,102 @@ class CSVIngestor:
         except Exception as err:
             print("Error:", err)
 
-    def get_optimal_batch_size(self, df, common_attributes, verbose=False):
+    def get_optimal_writes_per_request(self, file_path):
         """
+        100 records is the limit per request, figure out how many writes per request
         A timeseries write can be up to 1KB.
         Common attributes only need to be counted once so the number of events that can be fit in a 1KB write is
 
         (1000 - common_attr_size) // individual_event_size
+
+        - We are charged for writes, so we want to minimize the number of writes per request.
+        - We can fit at most 100 records per request
+        - The number of writes is rounded to the nearest KB
+        theoretical best case scenario is that we can fit 100 records into a single write
+            this would require each record including common attributes to be 10 bytes
+            (almost impossible, time alone is 8 bytes)
+
+
+        imagine records are 50 bytes each, with 30 bytes of common attributes
+        worst case scenario is sending one record at a time, so 100 records = 100 requests = 100 writes (charged 1kb ea)
+        better case scenario is that we fit as many records as we can into a single write,
+            so 1000 bytes / 50 bytes = 20 records per write (5x cheaper than worst case)
+        best case scenario is that we refactor out the common attributes and fit as many records as we can into a single
+        request.
+            so (1000 bytes - 30 bytes) // 20 bytes = 48 records + common per write -> 2 writes per 100-record request
+            ergo 50x cheaper than worst case
+
+        sizes:
+                dim1: 11 bytes ('ppt_id' + 'fc155')
+                dim2: 16 bytes ('dev_id' + 'ABCDE12345')
+                measure_name:
+                    'acc_g': 5 bytes
+                    'eda_microS': 10 bytes
+                    'temp_degC': 9 bytes
+                time: 8 bytes
+                measure_value: 8 bytes (per measurement)
+                    acc_g: 3x8 = 24 bytes
+                    eda_microS: 8 bytes
+                    temp_degC: 8 bytes
+
         """
+
+        path_list = file_path.split(os.sep)
+        assert len(path_list[-2]) == 10
+        participant_id = path_list[-4].lower() + path_list[-3]
+        assert len(participant_id) == 5
+
+        csv_type = "acc" if "acc.csv" in file_path else "eda" if "eda.csv" in file_path else "temp"
+
         write_max = 1000
-        common_attr_size = getsizeof(common_attributes)
-        avg_row_size = round(df.memory_usage(deep=True).sum() / df.shape[0])
-        batch_size = (write_max - common_attr_size) // avg_row_size
+        params_by_type = {
+            "temp": {
+                # dim1 + dim2 + measure_name = 11 + 16 + 9 = 36 bytes
+                "common_attr_size": 36,
+                # time (8) + measure_value (8) = 16 bytes
+                "record_size": 16,
+            },
+            "eda": {
+                # dim1 + dim2 + measure_name = 11 + 16 + 10 = 37 bytes
+                "common_attr_size": 37,
+                # time (8) + measure_value (8) = 16 bytes
+                "record_size": 16,
+            },
+            "acc": {
+                # dim1 + dim2 + measure_name = 11 + 16 + 5 = 32 bytes
+                "common_attr_size": 32,
+                # time (8) + x_value (8) + y_value (8) + z_value (8) = 32 bytes
+                "record_size": 32,
+            },
+        }
+        common_attr_size = params_by_type[csv_type]["common_attr_size"]
+        record_size = params_by_type[csv_type]["record_size"]
+        max_records_per_request = 100
+        max_records_per_write = (write_max - common_attr_size) // record_size
+        writes_per_request = round(max_records_per_request / max_records_per_write)
 
-        if verbose:
-            print(f"Average row size: {avg_row_size} bytes")
-            print(f"Num of records per write: {batch_size}")
-        return batch_size
+        return writes_per_request
 
-    def estimate_csv_write_cost(self, filepath, participant_id, device_id):
-        common_attributes = self.get_common_attrs(filepath, participant_id, device_id)
+    def estimate_csv_write_cost(self, file_path):
 
-        # reformat CSV to Records series
-        df = self.get_timestream_df(filepath)
-        batch_size = self.get_optimal_batch_size(df, common_attributes)
+        df_len = self.get_csv_len(file_path)
 
-        num_writes_in_df = df.shape[0] // batch_size + 1
+        # how many writes are needed for each 100-record request
+        writes_per_request = self.get_optimal_writes_per_request(file_path)
+
+        num_requests_per_df = df_len // 100 + 1
+        num_writes_in_df = num_requests_per_df * writes_per_request
 
         cost = num_writes_in_df * (0.50 / 1000000)
 
         # price is $0.50 / 1M writes
-        print(f"Estimated cost for {filepath}: ${cost}")
+        print(f"Estimated cost for {file_path}: ${cost}")
         return cost
+
+    def get_csv_len(self, file_path):
+        p = subprocess.Popen(['wc', '-l', file_path], stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE)
+        result, err = p.communicate()
+        if p.returncode != 0:
+            raise IOError(err)
+        return int(result.strip().split()[0]) + 1
