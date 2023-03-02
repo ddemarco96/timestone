@@ -6,11 +6,12 @@ For now we expect data to be nested in the format:
 
 """
 
-import boto3
+
 import shutil
 import argparse
 
 from csv_ingestor import CSVIngestor
+import boto3
 from botocore.config import Config
 import os
 import zipfile
@@ -72,11 +73,15 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("-f", "--file_path", help="This file will be used for ingesting records.")
     parser.add_argument("-k", "--kmsId", help="This will be used for updating the database.")
-    parser.add_argument("-c", "--cost", help="Print the cost of uploading the file/s in file_path.", action=argparse.BooleanOptionalAction)
-    parser.add_argument("-fs", "--full_send", help="Write the data to Timestream.", action=argparse.BooleanOptionalAction)
+    parser.add_argument("-c", "--cost", help="Print the cost of uploading the file/s in file_path.",
+                        action=argparse.BooleanOptionalAction)
+    parser.add_argument("-fs", "--full_send", help="Write the data to Timestream.",
+                        action=argparse.BooleanOptionalAction)
+    parser.add_argument("-v", "--verbose", help="Call functions with the verbose arg",
+                        action=argparse.BooleanOptionalAction)
     args = parser.parse_args()
 
-    session = boto3.Session()
+    session = boto3.Session(profile_name='nocklab')
 
     # Recommended Timestream write client SDK configuration:
     #  - Set SDK retry count to 10.
@@ -95,14 +100,22 @@ if __name__ == '__main__':
     if args.file_path.endswith(".zip") and args.cost:
         walking_cost(args.file_path, ingestor)
     else:
-        if args.file_path is not None:
+        if args.file_path.endswith(".zip"):
+            filepaths = unzip_walk(args.file_path, cleanup=False)
+            for unzipped_path in filepaths:
+                # file_path = "data/unzipped/allsites_month/FC/157/12345ABCDE/temp.csv"
+                device_id, ppt_id = extract_ids_from_path(unzipped_path)
+                assert len(ppt_id) == 5
+                verbose = True if args.verbose is not None else False
+                ingestor.write_records_with_common_attributes(
+                    participant_id=ppt_id, device_id=device_id, file_path=unzipped_path, verbose=verbose)
+        else:
             # file_path = "data/unzipped/allsites_month/FC/157/12345ABCDE/temp.csv"
             device_id, ppt_id = extract_ids_from_path(args.file_path)
             assert len(ppt_id) == 5
-            if args.cost:
-                ingestor.estimate_csv_write_cost(file_path=args.file_path)
-            if args.cost is None:
-                ingestor.write_records_with_common_attributes(participant_id=ppt_id, device_id=device_id, file_path=args.file_path)
+            verbose = True if args.verbose is not None else False
+            ingestor.write_records_with_common_attributes(
+                participant_id=ppt_id, device_id=device_id, file_path=args.file_path, verbose=verbose)
 
 
 

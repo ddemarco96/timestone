@@ -1,7 +1,9 @@
 import os
 import subprocess
 import time
+
 import pandas as pd
+import awswrangler as wr
 from sys import getsizeof
 from constants import DATABASE_NAME, TABLE_NAME
 
@@ -64,10 +66,11 @@ class CSVIngestor:
     def __init__(self, client):
         self.client = client
 
-    def get_common_attrs(self, file_path, participant_id, device_id):
+    @staticmethod
+    def get_common_attrs(file_path, participant_id, device_id):
         dimensions = [
             {'Name': 'ppt_id', 'Value': participant_id},
-            {'Name': 'device_id', 'Value': device_id}
+            {'Name': 'dev_id', 'Value': device_id}
         ]
 
         measure_name = None
@@ -77,6 +80,7 @@ class CSVIngestor:
             measure_name = "temp_degC"
         elif "acc.csv" in file_path:
             measure_name = "acc_g"
+        print(file_path)
         assert measure_name is not None
 
         common_attributes = {
@@ -86,77 +90,55 @@ class CSVIngestor:
         }
         return common_attributes
 
-    def get_timestream_df(self, file_path):
-        # reformat CSV to Records series
-        if "acc.csv" in file_path:
-            # check if acc_reformatted.csv exists in the same directory
-            # if it doesn't exist, create it
-
-            df = pd.read_csv(file_path)
-            df.rename(columns={df.columns[0]: "Time", df.columns[1]: "x", df.columns[2]: "y", df.columns[3]: "z"},
-                      inplace=True)
-            return df
-        df = pd.read_csv(file_path)
-        df.rename(columns={df.columns[0]: "Time", df.columns[1]: "MeasureValue"}, inplace=True)
-        return df
-
-    def write_records_with_common_attributes(self, participant_id, device_id, file_path):
+    def write_records_with_common_attributes(self, participant_id, device_id, file_path, verbose=False):
         print(f"Writing records and extracting common attributes for {participant_id}...")
         common_attributes = self.get_common_attrs(file_path, participant_id, device_id)
         # reformat CSV to Records series
-        df = self.get_timestream_df(file_path)
+        # loop through the csv in chunks of 1M rows and write to timestream in batches of 100 records
+        chunks_read = 0
+        records_read = 0
+        chunksize = 1000000 # 1M rows
+        if "acc.csv" in file_path:
+            names = ["Time", "x", "y", "z"]
+            dtypes = {"Time": "str", "x": "str", "y": "str", "z": "str"}
+        else:
+            names = ["Time", "MeasureValue"]
+            dtypes = {"Time": "str", "MeasureValue": "str"}
 
-        batch_size = self.get_optimal_batch_size(df, common_attributes)
+        with pd.read_csv(file_path, header=0, names=names, chunksize=chunksize, dtype=dtypes) as reader:
+            for chunk in reader:  # each chunk is a df
+                chunks_read += 1
+                records_read += chunk.shape[0]
+                if verbose:
+                    print(f"Processing chunk {chunks_read} with {chunk.shape[0]} records...")
+                # Add dimensions to chunk
 
-        num_batches = int(df.shape[0] // batch_size + 1)
-        print(f"Writing {num_batches} batches of {batch_size} records each...")
-        for i in range(num_batches):
-            start = i * batch_size
-            end = start + batch_size
-            # returns a list of dicts...[{Time: val1, MeasureValue: val2}, ...]
-            """
-            unbatched temp per record
-                time: 8 bytes
-                dim1: 11 bytes ('ppt_id' + 'fc155')
-                dim2: 16 bytes ('dev_id' + 'ABCDE12345')
-                measure_name: 9 bytes ('temp_degC')
-                                        eda_microS
-                measure_value: 8 bytes
-                    total: 52 bytes / record
-                1 write = 1kb//52b = 19 records 
-                    
-            batched temp per record
-                1kb - common: 11 + 16 + 9 = 36 bytes
-                
-                time + measure_value: 16 bytes
-                    total: 16 bytes / record + common
-                    1 write = (1kb-36)//16b = 60 records
-                    
-                
-                
-            
-            
-            """
-            records = df[start:end].to_dict(orient='records')
+                chunk_dict = chunk.to_dict('records')
+                record_batch_limit = 100
+                # walk through dictionary 100 records at a time
+                for i in range(0, len(chunk_dict), record_batch_limit):
+                    record_batch = chunk_dict[i:i + record_batch_limit]
+                    if 'acc.csv' in file_path:
+                        table_name = "mm_streams"
+                    elif 'eda.csv' in file_path:
+                        table_name = "sm_streams"
+                    elif 'temp.csv' in file_path:
+                        table_name = "sm_streams"
+                    try:
+                        self.client.write_records(DatabaseName=DATABASE_NAME, TableName=table_name,
+                                                  Records=record_batch, CommonAttributes=common_attributes)
+                    except self.client.exceptions.RejectedRecordsException as err:
+                        print("RejectedRecords: ", err)
+                        for rr in err.response["RejectedRecords"]:
+                            print("Rejected Index " + str(rr["RecordIndex"]) + ": " + rr["Reason"])
+                        print("Other records were written successfully. ")
+                    except Exception as err:
+                        print("Error:", err)
 
-            if i < num_batches - 1:
-                # sanity check batches are the right size except for final batch which may be smaller
-                assert batch_size >= len(records) > 0.9 * batch_size
-            self.submit_batch(records, common_attributes, i + 1)
+                if verbose:
+                    print("Chunk read complete.")
 
-            # self.client.write_records(DatabaseName=DATABASE_NAME,
-            #                           TableName=TABLE_NAME,
-            #                           Records=records,
-            #                           CommonAttributes=common_attributes)
-
-    def submit_batch(self, records, common_attributes, counter):
-        try:
-            result = self.client.write_records(DatabaseName=DATABASE_NAME, TableName=TABLE_NAME,
-                                               Records=records, CommonAttributes=common_attributes)
-            print("Processed batch [%d]. WriteRecords Status: [%s]" % (counter,
-                                                                       result['ResponseMetadata']['HTTPStatusCode']))
-        except Exception as err:
-            print("Error:", err)
+        return records_read
 
     def get_optimal_writes_per_request(self, file_path):
         """
@@ -236,12 +218,12 @@ class CSVIngestor:
 
     def estimate_csv_write_cost(self, file_path):
 
-        df_len = self.get_csv_len(file_path)
+        df_rows = self.get_csv_num_rows(file_path)
 
         # how many writes are needed for each 100-record request
         writes_per_request = self.get_optimal_writes_per_request(file_path)
 
-        num_requests_per_df = df_len // 100 + 1
+        num_requests_per_df = df_rows // 100 + 1
         num_writes_in_df = num_requests_per_df * writes_per_request
 
         cost = num_writes_in_df * (0.50 / 1000000)
@@ -250,10 +232,34 @@ class CSVIngestor:
         print(f"Estimated cost for {file_path}: ${cost}")
         return cost
 
-    def get_csv_len(self, file_path):
+    def get_csv_num_rows(self, file_path):
+        # the number of lines in the csv is the number of records + 1 (header)
         p = subprocess.Popen(['wc', '-l', file_path], stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE)
         result, err = p.communicate()
         if p.returncode != 0:
             raise IOError(err)
-        return int(result.strip().split()[0]) + 1
+        return int(result.strip().split()[0]) - 1
+
+    def list_databases(self):
+        print("Listing databases")
+        try:
+            result = self.client.list_databases(MaxResults=5)
+            self._print_databases(result['Databases'])
+            next_token = result.get('NextToken', None)
+            while next_token:
+                result = self.client.list_databases(NextToken=next_token, MaxResults=5)
+                self._print_databases(result['Databases'])
+                next_token = result.get('NextToken', None)
+        except Exception as err:
+            print("List databases failed:", err)
+
+    @staticmethod
+    def __print_tables(tables):
+        for table in tables:
+            print(table['TableName'])
+
+    @staticmethod
+    def _print_databases(databases):
+        for database in databases:
+            print(database['DatabaseName'])

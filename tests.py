@@ -1,8 +1,11 @@
 import os
 import shutil
+import boto3
+from botocore.config import Config
 from unittest import main, TestCase
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 from io import StringIO
+import awswrangler as wr
 
 from csv_ingestor import CSVIngestor
 from uploader import unzip_walk, walking_cost
@@ -18,7 +21,6 @@ class TestGetFileInfo(TestCase):
         cls.device_id = cls.path_list[-2]
         cls.ppt_id = cls.path_list[-4].lower() + cls.path_list[-3]
         cls.common_attrs = CSVIngestor(None).get_common_attrs(cls.file_path, cls.ppt_id, cls.device_id)
-        cls.df = CSVIngestor(None).get_timestream_df(cls.file_path)
 
     def test_get_common_attrs(self):
         dims = self.common_attrs['Dimensions']
@@ -29,10 +31,15 @@ class TestGetFileInfo(TestCase):
         # TODO: expand this to test all the different types of csvs
         self.assertEqual(self.common_attrs['MeasureName'], 'temp_degC')
 
-    def test_get_timestream_df(self):
-        self.assertEqual(self.df.shape[1], 2)
-        self.assertEqual(self.df.columns[0], 'Time')
-        self.assertEqual(self.df.columns[1], 'MeasureValue')
+    def test_csv_num_rows(self):
+        expected_rows = 2144132  # CSVIngestor(None).get_timestream_df(cls.file_path).shape[0]
+        subprocess_rows = CSVIngestor(None).get_csv_num_rows(self.file_path)
+        self.assertEqual(expected_rows, subprocess_rows)
+
+    # def test_get_timestream_df(self):
+    #     self.assertEqual(self.df.shape[1], 2)
+    #     self.assertEqual(self.df.columns[0], 'Time')
+    #     self.assertEqual(self.df.columns[1], 'MeasureValue')
 
     def test_get_optimal_writes_per_request(self):
         csv_types = ["temp", "eda", "acc"]
@@ -64,7 +71,7 @@ class TestGetFileInfo(TestCase):
             msg = f"Estimated cost for {self.file_path}: $"
             self.assertLessEqual(cost, 1.00)  # a single temp csv should not cost more than $1
             self.assertIn(msg, fake_out.getvalue())
-
+    #
     def test_unzip_walk(self):
         # with patch('sys.stdout', new=StringIO()) as fake_out:
         test_file_path = "test_data/zips/Sensors_U02_ALLSITES_20190801_20190831.zip"
@@ -119,21 +126,35 @@ class TestGetFileInfo(TestCase):
         self.assertTrue(os.path.exists("test_data/unzipped/"))
         shutil.rmtree("test_data/unzipped/")
 
-    def test_cost_with_zip(self):
-        with patch('sys.stdout', new=StringIO()) as fake_out:
-            ingestor = CSVIngestor(None)
-            total_cost = walking_cost(self.zippath, ingestor)
-            self.assertGreaterEqual(total_cost, 0.0)
-            self.assertEqual(round(total_cost, 2), round(1.0489685, 2))
-            shutil.rmtree("data/unzipped/2021-07")
-
-    # def test_write_records(self):
+    # very slow, uncomment to test
+    # def test_cost_with_zip(self):
     #     with patch('sys.stdout', new=StringIO()) as fake_out:
-    #         CSVIngestor(None).write_records_with_common_attributes(
-    #             participant_id=self.ppt_id,
-    #             device_id=self.device_id,
-    #             file_path=self.file_path)
-    #         msg = f"Writing records and extracting common attributes for {self.ppt_id}..."
-    #         self.assertIn(msg, fake_out.getvalue())
+    #         ingestor = CSVIngestor(None)
+    #         total_cost = walking_cost(self.zippath, ingestor)
+    #         self.assertGreaterEqual(total_cost, 0.0)
+    #         self.assertEqual(round(total_cost, 2), round(1.0489685, 2))
+    #         shutil.rmtree("data/unzipped/2021-07")
+
+    @patch('boto3.Session')
+    def test_write_records(self, Session):
+        with patch('sys.stdout', new=StringIO()) as fake_out:
+            mock_session = Session.return_value
+            client = mock_session.client('timestream-write', config=Config(read_timeout=20, max_pool_connections=5000,
+                                                                    retries={'max_attempts': 10}))
+            client.write_records = MagicMock(return_value={'ResponseMetadata': {'HTTPStatusCode': 200}})
+
+            num_read = CSVIngestor(client).write_records_with_common_attributes(
+                participant_id=self.ppt_id,
+                device_id=self.device_id,
+                file_path=self.file_path,
+                verbose=True)
+            # Check that the file was looped through
+            num_rows = CSVIngestor(None).get_csv_num_rows(self.file_path)
+            num_chunks = num_rows // 1000000
+            self.assertEqual(num_read, num_rows)
+            chunk_msg = f"Processing chunk {num_chunks} with 1000000 records..."
+            self.assertIn(chunk_msg, fake_out.getvalue())
+
+
 
 main()
