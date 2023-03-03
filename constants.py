@@ -1,4 +1,4 @@
-DATABASE_NAME = "test_u01_embrace"
+DATABASE_NAME = "testymctestface"
 TABLE_NAME = "test_embrace"
 HT_TTL_HOURS = 24
 CT_TTL_DAYS = 7
