@@ -73,6 +73,11 @@ class CSVIngestor:
             measure_name = "eda_microS"
         elif "temp.csv" in filepath:
             measure_name = "temp_degC"
+<<<<<<< Updated upstream
+=======
+        elif "acc.csv" in file_path:
+            measure_name = "acc_g"
+>>>>>>> Stashed changes
         assert measure_name is not None
 
         common_attributes = {
@@ -88,14 +93,26 @@ class CSVIngestor:
         df.rename(columns={df.columns[0]: "Time", df.columns[1]: "MeasureValue"}, inplace=True)
         return df
 
+<<<<<<< Updated upstream
     def write_records_with_common_attributes(self, participant_id, device_id, filepath):
         print(f"Writing records and extracting common attributes for {participant_id}...")
         common_attributes = self.get_common_attrs(filepath, participant_id, device_id)
         # reformat CSV to Records series
         df = self.get_timestream_df(filepath)
+=======
+        with pd.read_csv(file_path, header=0, names=names, chunksize=chunksize, dtype=dtypes) as reader:
+            start_time = time.time()
+            for chunk in reader:  # each chunk is a df
+                chunks_read += 1
+                records_read += chunk.shape[0]
+                if verbose:
+                    print(f"Processing chunk {chunks_read} with {chunk.shape[0]} records...")
+                # Add dimensions to chunk
+>>>>>>> Stashed changes
 
         batch_size = self.get_optimal_batch_size(df, common_attributes)
 
+<<<<<<< Updated upstream
         num_batches = int(df.shape[0] // batch_size + 1)
         print(f"Writing {num_batches} batches of {batch_size} records each...")
         for i in range(num_batches):
@@ -108,6 +125,12 @@ class CSVIngestor:
                 # sanity check batches are the right size except for final batch which may be smaller
                 assert batch_size >= len(records) > 0.9 * batch_size
             self.submit_batch(records, common_attributes, i + 1)
+=======
+                if verbose:
+                    end_time = time.time()
+                    print("Chunk read complete. Took {} seconds".format(end_time - start_time))
+        return records_read
+>>>>>>> Stashed changes
 
             # self.client.write_records(DatabaseName=DATABASE_NAME,
             #                           TableName=TABLE_NAME,
@@ -130,6 +153,11 @@ class CSVIngestor:
 
         (1000 - common_attr_size) // individual_event_size
         """
+<<<<<<< Updated upstream
+=======
+        csv_type = "acc" if "acc.csv" in file_path else "eda" if "eda.csv" in file_path else "temp"
+
+>>>>>>> Stashed changes
         write_max = 1000
         common_attr_size = getsizeof(common_attributes)
         avg_row_size = round(df.memory_usage(deep=True).sum() / df.shape[0])
@@ -140,6 +168,7 @@ class CSVIngestor:
             print(f"Num of records per write: {batch_size}")
         return batch_size
 
+<<<<<<< Updated upstream
     def estimate_csv_write_cost(self, filepath, participant_id, device_id):
         common_attributes = self.get_common_attrs(filepath, participant_id, device_id)
 
@@ -148,9 +177,59 @@ class CSVIngestor:
         batch_size = self.get_optimal_batch_size(df, common_attributes)
 
         num_writes_in_df = df.shape[0] // batch_size + 1
+=======
+    def estimate_csv_write_cost(self, file_path, df_rows, verbose=False):
+        # how many writes are needed for each 100-record request
+        writes_per_request = self.get_optimal_writes_per_request(file_path)
+
+        num_requests_per_df = df_rows // 100 + 1
+        num_writes_in_df = num_requests_per_df * writes_per_request
+>>>>>>> Stashed changes
 
         cost = num_writes_in_df * (0.50 / 1000000)
 
         # price is $0.50 / 1M writes
+<<<<<<< Updated upstream
         print(f"Estimated cost for {filepath}: ${cost}")
         return cost
+=======
+        if verbose:
+            print(f"Estimated cost for {file_path}: ${cost}")
+        return cost
+
+    @staticmethod
+    def estimate_csv_write_time(file_path, df_rows, verbose=False):
+        # 1M records takes about 11 minutes to write
+        minutes = round(df_rows * (11 / 1000000), 2)
+        if verbose:
+            print(f"Estimated time for {file_path}: {minutes} minutes")
+        return minutes
+
+    @staticmethod
+    def get_num_rows(file_path):
+        # the number of lines in the csv is the number of records + 1 (header)
+        p = subprocess.Popen(['wc', '-l', file_path], stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE)
+        result, err = p.communicate()
+        if p.returncode != 0:
+            raise IOError(err)
+        return int(result.strip().split()[0]) - 1
+
+    def list_databases(self):
+        print("Listing databases")
+        try:
+            result = self.client.list_databases(MaxResults=5)
+            self._print_databases(result['Databases'])
+            next_token = result.get('NextToken', None)
+            while next_token:
+                result = self.client.list_databases(NextToken=next_token, MaxResults=5)
+                self._print_databases(result['Databases'])
+                next_token = result.get('NextToken', None)
+        except Exception as err:
+            print("List databases failed:", err)
+
+    @staticmethod
+    def _print_databases(databases):
+        for database in databases:
+            print(database['DatabaseName'])
+>>>>>>> Stashed changes
