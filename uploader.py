@@ -6,13 +6,13 @@ For now we expect data to be nested in the format:
 
 """
 
-import boto3
+
+import shutil
 import argparse
 
 from csv_ingestor import CSVIngestor
+import boto3
 from botocore.config import Config
-<<<<<<< Updated upstream
-=======
 import os
 import zipfile
 
@@ -87,16 +87,10 @@ def extract_streams_from_pathlist(file_paths, streams):
             filtered_paths.append(file_path)
     return filtered_paths
 
->>>>>>> Stashed changes
 
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
-<<<<<<< Updated upstream
-    parser.add_argument("-f", "--filepath", help="This file will be used for ingesting records")
-    parser.add_argument("-k", "--kmsId", help="This will be used for updating the database")
-    parser.add_argument("-c", "--cost", help="Print the cost of uploading the file in filepath", action=argparse.BooleanOptionalAction)
-=======
     parser.add_argument("-f", "--file_path", help="This file will be used for ingesting records.")
     parser.add_argument("-s", "--streams", help="Comma separated list of streams to ingest e.g., 'acc,temp'.")
     parser.add_argument("-as", "--all-streams", help="Ingest all streams, ignore -s/--streams.",
@@ -108,10 +102,9 @@ if __name__ == '__main__':
                         action=argparse.BooleanOptionalAction)
     parser.add_argument("-v", "--verbose", help="Call functions with the verbose arg",
                         action=argparse.BooleanOptionalAction)
->>>>>>> Stashed changes
     args = parser.parse_args()
 
-    session = boto3.Session()
+    session = boto3.Session(profile_name='nocklab')
 
     # Recommended Timestream write client SDK configuration:
     #  - Set SDK retry count to 10.
@@ -126,18 +119,6 @@ if __name__ == '__main__':
     # if args.kmsId is not None:
         # csv_ingestion_example.update_database(args.kmsId)
 
-<<<<<<< Updated upstream
-    if args.filepath is not None:
-        # filepath = "data/unzipped/allsites_month/FC/157/12345ABCDE/temp.csv"
-        path_list = args.filepath.split('/')
-        device_id = path_list[-2]
-        ppt_id = path_list[-4].lower() + path_list[-3]
-        assert len(ppt_id) == 5
-    if args.cost:
-        ingestor.estimate_csv_write_cost(participant_id=ppt_id, device_id=device_id, filepath=args.filepath)
-    if args.cost is None:
-        ingestor.write_records_with_common_attributes(participant_id=ppt_id, device_id=device_id, filepath=args.filepath)
-=======
     # check if the file_path is a zip file
     if args.file_path.endswith(".zip"):
         # if it is, unzip it and get the file paths to all the csvs
@@ -183,4 +164,3 @@ if __name__ == '__main__':
 
 
 
->>>>>>> Stashed changes
