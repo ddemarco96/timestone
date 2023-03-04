@@ -31,9 +31,10 @@ def unzip_walk(file_path, cleanup=True):
         os.mkdir(unzipped_dir)
     # 2/3. Unzip the file and move all to unzipped_dir
     with zipfile.ZipFile(file_path, 'r') as zip_ref:
-        target_dir = zip_ref.filelist[0].filename
-        target_path = os.path.join(unzipped_dir, target_dir)
-        zip_ref.extractall(unzipped_dir)
+        zip_name = zip_ref.filename.split(os.sep)[-1][0:-4]
+        target_path = os.path.join(unzipped_dir, zip_name)
+        # this can get messed up depending on whether foo.zip creates a dir foo or not
+        zip_ref.extractall(target_path)
     # 4. return the list of file paths to any eda, temp, or acc csvs files in any dir within the unzipped dir
     file_paths = []
     for root, dirs, files in os.walk(target_path):
@@ -52,14 +53,14 @@ def walking_cost(path_rows, ingestor, verbose):
     """
     total_cost = 0
     for (path, num_rows) in path_rows:
-        total_cost += ingestor.estimate_csv_write_cost(file_path=path, num_rows=num_rows, verbose=verbose)
+        total_cost += ingestor.estimate_csv_write_cost(file_path=path, df_rows=num_rows, verbose=verbose)
     return total_cost
 
 def walking_time(path_rows, ingestor, verbose):
     """Return the time in minutes it will take to upload all the files in path_rows"""
     total_time = 0
     for (path, num_rows) in path_rows:
-        total_time += ingestor.estimate_csv_write_time(file_path=path, num_rows=num_rows, verbose=verbose)
+        total_time += ingestor.estimate_csv_write_time(file_path=path, df_rows=num_rows, verbose=verbose)
     return total_time
 
 def extract_ids_from_path(file_path):
@@ -122,7 +123,7 @@ if __name__ == '__main__':
     # check if the file_path is a zip file
     if args.file_path.endswith(".zip"):
         # if it is, unzip it and get the file paths to all the csvs
-        file_paths = unzip_walk(args.file_path)
+        file_paths = unzip_walk(args.file_path, cleanup=False)
     else:
         # if it's not, just get the file path
         file_paths = [args.file_path]
