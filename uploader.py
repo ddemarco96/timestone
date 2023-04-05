@@ -16,77 +16,10 @@ from botocore.config import Config
 import os
 import zipfile
 
+from estimators import walking_cost, walking_time
+from file_handler import unzip_walk
 
-def unzip_walk(file_path, cleanup=True):
-    """
-    1. Find the parent dir of the file_path
-    2. Unzip the file
-    3. Move the contents to parent_dir/unzipped
-    4. return the list of file paths to any eda, temp, or acc csvs files in any dir within the unzipped dir
-    """
-    # 1. Find the parent dir of the file_path
-    grandparent_dir = os.path.dirname(os.path.dirname(file_path))
-    unzipped_dir = os.path.join(grandparent_dir, "unzipped")
-    if not os.path.exists(unzipped_dir):
-        os.mkdir(unzipped_dir)
-    # 2/3. Unzip the file and move all to unzipped_dir
-    with zipfile.ZipFile(file_path, 'r') as zip_ref:
-        zip_name = zip_ref.filename.split(os.sep)[-1][0:-4]
-        target_path = os.path.join(unzipped_dir, zip_name)
-        # this can get messed up depending on whether foo.zip creates a dir foo or not
-        zip_ref.extractall(target_path)
-    # 4. return the list of file paths to any eda, temp, or acc csvs files in any dir within the unzipped dir
-    file_paths = []
-    for root, dirs, files in os.walk(target_path):
-        for file in files:
-            if file.endswith(".csv") and ("eda" in file or "temp" in file or "acc" in file):
-                file_paths.append(os.path.join(root, file))
-    # cleanup by removing the unzipped dir if you want
-    if cleanup:
-        shutil.rmtree(unzipped_dir)
-    return file_paths
 
-def walking_cost(path_rows, ingestor, verbose):
-    """
-    1. For each file path, get the file size
-    2. Return the sum of all file sizes
-    """
-    total_cost = 0
-    for (path, num_rows) in path_rows:
-        total_cost += ingestor.estimate_csv_write_cost(file_path=path, df_rows=num_rows, verbose=verbose)
-    return total_cost
-
-def walking_time(path_rows, ingestor, verbose):
-    """Return the time in minutes it will take to upload all the files in path_rows"""
-    total_time = 0
-    for (path, num_rows) in path_rows:
-        total_time += ingestor.estimate_csv_write_time(file_path=path, df_rows=num_rows, verbose=verbose)
-    return total_time
-
-def extract_ids_from_path(file_path):
-    """
-    1. Split the file_path on /
-    2. Get the device_id from the last index before the files
-    3. Get the ppt_id from the previous two levels
-    """
-    path_list = file_path.split(os.sep)
-    device_id = path_list[-2]
-    ppt_id = path_list[-4].lower() + path_list[-3]
-    return device_id, ppt_id
-
-def extract_streams_from_pathlist(file_paths, streams):
-    """
-    1. For each file_path, extract the device_id and ppt_id
-    2. If the device_id is in the streams list, add it to the list of streams
-    3. Return the list of streams
-    """
-    stream_list = streams.split(",")
-    # remove any paths which do not contain one of the streams we want
-    filtered_paths = []
-    for file_path in file_paths:
-        if any(stream in file_path for stream in stream_list):
-            filtered_paths.append(file_path)
-    return filtered_paths
 
 
 if __name__ == '__main__':
