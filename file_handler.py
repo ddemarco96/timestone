@@ -83,78 +83,82 @@ def extract_streams_from_pathlist(file_paths, streams):
             filtered_paths.append(file_path)
     return filtered_paths
 
-
-def raw_to_batch_upload(file_paths, output_dir='.', verbose=False):
+def create_output_file(output_path: str, stream: str) -> None:
     """
-    for each file in file_paths
-        - extract the month, participant id, and device id from the filepath
-        - determine the stream by the file name
-        - read the file into a dataframe
-        - rename the columns
-        - add the deivce id and participant id as univariate columns
-        - check if an output file exists in the path `pending_upload/[month]/[stream]/combined_[index].csv`
-        - if the file exists, check its size
-            - if the size of the file would be > 5GB after adding the dataframe to it
-                - increment index and create a new file
-                - set the output target as the new file
-            - else
-                - set the file as the output target
-        - if an output file does not exist, create it and set the output target to that file
-        - append the contents of the dataframe to the output target csv
+    Creates a new output file with headers based on the stream type
+    """
+    with open(output_path, "w", newline="") as csvfile:
+        writer = csv.writer(csvfile)
+        if stream == "acc":
+            writer.writerow(['Time', 'x', 'y', 'z', 'ppt_id', 'dev_id'])
+        else:
+            writer.writerow(['Time', 'MeasureValue', 'ppt_id', 'dev_id'])
+
+def raw_to_batch_format(file_paths, output_dir='.', verbose=False, streams='eda,temp,acc'):
+    """Processes a list of file paths and formats them for upload to AWS Timestream in batches.
+
+    Args:
+        file_paths (list of str): A list of file paths to process.
+        output_dir (str, optional): The directory to output processed files to. Defaults to the current directory.
+        verbose (bool, optional): Whether to print out the status of the processing. Defaults to False.
+        streams (str, optional): A comma-separated list of streams to process. Defaults to "eda,temp,acc".
+
+    Returns:
+        None
+
+    Examples:
+        raw_to_batch_upload(['/path/to/file1.csv', '/path/to/file2.csv'], output_dir='/path/to/output', verbose=True, streams='eda,temp')
     """
     # example path
     # Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/temp.csv
-    for path in file_paths:
-        month = re.findall(r'\d{8}_\d{8}', path)[0]
-        ppt_id, device_id = extract_ids_from_path(path)
-        stream = path.split(os.sep)[-1].split(".")[0]
+    for stream_type in streams.split(","):
+        output_index = 0
+        for path in file_paths:
+            month = re.findall(r'\d{8}_\d{8}', path)[0]
+            ppt_id, device_id = extract_ids_from_path(path)
+            stream = path.split(os.sep)[-1].split(".")[0]
+            if stream != stream_type:
+                continue
 
-        chunks_read = 0
-        records_read = 0
-        chunksize = 1000000  # 1M rows
-        if "acc.csv" in path:
-            names = ["Time", "x", "y", "z"]
-            dtypes = {"Time": "str", "x": "str", "y": "str", "z": "str"}
-        else:
-            names = ["Time", "MeasureValue"]
-            dtypes = {"Time": "str", "MeasureValue": "str"}
+            chunks_read = 0
+            records_read = 0
+            chunksize = 1000000  # 1M rows
+            if "acc.csv" in path:
+                names = ["Time", "x", "y", "z"]
+                dtypes = {"Time": "str", "x": "str", "y": "str", "z": "str"}
+            else:
+                names = ["Time", "MeasureValue"]
+                dtypes = {"Time": "str", "MeasureValue": "str"}
 
-        with pd.read_csv(path, header=0, names=names, chunksize=chunksize, dtype=dtypes) as reader:
-            start_time = time.time()
+            with pd.read_csv(path, header=0, names=names, chunksize=chunksize, dtype=dtypes) as reader:
+                start_time = time.time()
 
-            output_index = 0
-            for chunk in reader:  # each chunk is a df
-                chunks_read += 1
-                records_read += chunk.shape[0]
-                if verbose:
-                    print(f"Processing chunk {chunks_read} with {chunk.shape[0]} records...")
-                chunk['dev_id'] = device_id
-                chunk['ppt_id'] = ppt_id
-                # check if an output file exists in the path `pending_upload/[month]/[stream]/combined_[index].csv`
-                output_path = os.path.join(output_dir, "pending_upload", month, stream, f"combined_{output_index}.csv")
-                if not os.path.exists(os.path.dirname(output_path)):
-                    os.makedirs(os.path.dirname(output_path))
-                    if not os.path.exists(output_path):
-                        print(f"Creating new file: {output_path}")
-                        with open(output_path, "w", newline="") as csvfile:
-                            writer = csv.writer(csvfile)
-                            if stream == "acc":
-                                writer.writerow(['Time', 'x', 'y', 'z', 'ppt_id', 'dev_id'])
-                            else:
-                                writer.writerow(['Time', 'MeasureValue', 'ppt_id', 'dev_id'])
-
-
-
-                # if it does, check its size
-                # if the size of the file would be > 5GB after adding the dataframe to it
-                output_size = os.path.getsize(output_path) + sys.getsizeof(chunk)
-                is_new_file = False
-                if output_size > 4.9 * 10**9: # max upload size if 5GB
-                    # increment index and create a new file
-                    is_new_file = True
-                    output_index += 1
+                for chunk in reader:  # each chunk is a df
+                    chunks_read += 1
+                    records_read += chunk.shape[0]
+                    print(f"Processing chunk {chunks_read} with {chunk.shape[0]} records...") if verbose else None
+                    chunk['dev_id'] = device_id
+                    chunk['ppt_id'] = ppt_id
+                    # check if an output file exists in the path `pending_upload/[month]/[stream]/combined_[index].csv`
                     output_path = os.path.join(output_dir, "pending_upload", month, stream, f"combined_{output_index}.csv")
+                    if not os.path.exists(os.path.dirname(output_path)):
+                        os.makedirs(os.path.dirname(output_path))
+                        if not os.path.exists(output_path):
+                            print(f"Creating new file: {output_path}") if verbose else None
+                            create_output_file(output_path, stream)
 
-                # append the contents of the dataframe to the output target csv
-                # include the header only if it's a new file
-                chunk.to_csv(output_path, mode="a", header=is_new_file, index=False)
+
+
+                    # if it does, check its size
+                    output_size = os.path.getsize(output_path) + sys.getsizeof(chunk)
+                    # if the size of the file would be > 4.9GB (AWS max is 5GB) after adding the dataframe to it,
+                    if output_size > 4.9 * 10**9:
+                        # increment index and create a new file
+                        output_index += 1
+                        output_path = os.path.join(output_dir, "pending_upload", month, stream, f"combined_{output_index}.csv")
+                        print(f"Creating new file: {output_path}") if verbose else None
+                        create_output_file(output_path, stream)
+
+                    # append the contents of the dataframe to the output target csv
+                    # include the header only if it's a new file
+                    chunk.to_csv(output_path, mode="a", header=False, index=False)

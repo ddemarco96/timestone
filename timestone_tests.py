@@ -1,9 +1,13 @@
+import os
 import shutil
 import unittest
 import subprocess
 from io import StringIO
 from unittest.mock import patch
-from timestone import unzip_walk, extract_streams_from_pathlist, raw_to_batch_upload
+
+import pandas as pd
+
+from timestone import unzip_walk, extract_streams_from_pathlist, raw_to_batch_format
 
 
 class TestConvertRawToBatch(unittest.TestCase):
@@ -43,16 +47,28 @@ class TestFileHandlers(unittest.TestCase):
     #     file_paths = extract_streams_from_pathlist(file_paths, 'acc')
     #     self.assertEqual(len(file_paths), 1)
 
-    def test_raw_to_batch(self):
+    def test_raw_to_batch_runs(self):
         """Test that the raw_to_batch function returns the correct number of files"""
         file_path = 'test_data/zips/Sensors_U02_ALLSITES_20190801_20190831.zip'
         file_paths = unzip_walk(file_path, cleanup=False)
-        file_paths = extract_streams_from_pathlist(file_paths, 'eda,acc')
-        self.assertEqual(len(file_paths), 12)
+        streams = 'eda'
+        file_paths = extract_streams_from_pathlist(file_paths, streams)
+        self.assertEqual(len(file_paths), len(streams.split(',')) * 6)
 
-        raw_to_batch_upload(file_paths, verbose=False, output_dir='./test_data/')
+        raw_to_batch_format(file_paths, verbose=False, output_dir='./test_data/', streams=streams)
+        # assert that there is now a combined eda file in the pending_upload directory
+        self.assertEqual(len(os.listdir('test_data/pending_upload')), 1)
+        self.assertEqual(os.listdir('test_data/pending_upload/')[0], '20190801_20190831')
+        self.assertEqual(os.listdir('test_data/pending_upload/20190801_20190831')[0], 'eda')
+        self.assertEqual(os.listdir('test_data/pending_upload/20190801_20190831/eda')[0], 'combined_0.csv')
+
+        df = pd.read_csv('test_data/pending_upload/20190801_20190831/eda/combined_0.csv')
+        num_lines = 9  # number of eda lines in the test data
+        num_files = 6  # 2 devices for 2 ppts, 1 device for two other ppts
+        self.assertEqual(df.shape[0], num_lines * num_files)
+
         shutil.rmtree('test_data/unzipped')
-        # shutil.rmtree('test_data/pending_upload')
+        shutil.rmtree('test_data/pending_upload')
 
 if __name__ == '__main__':
     unittest.main()

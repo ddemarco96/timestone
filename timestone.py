@@ -7,7 +7,7 @@ import shutil
 import zipfile
 
 from csv_ingestor import CSVIngestor
-from file_handler import unzip_walk, extract_streams_from_pathlist, raw_to_batch_upload
+from file_handler import unzip_walk, extract_streams_from_pathlist, raw_to_batch_format
 from estimators import  walking_cost, walking_time
 
 if __name__ == "__main__":
