@@ -8,12 +8,14 @@ import zipfile
 
 from csv_ingestor import CSVIngestor
 from file_handler import unzip_walk, extract_streams_from_pathlist, raw_to_batch_format
+from insights import wear_time
 from estimators import  walking_cost, walking_time
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Tools for helping to upload embrace data to Amazon Timestream')
     # parser.add_argument('-h', '--help', action='help', help='Show this help message and exit')
     parser.add_argument('--path', type=str, help='Path to the folder containing the data to upload')
+    parser.add_argument('-o', '--output', type=str, help='Path to the folder to output the data to')
     parser.add_argument('-db', '--database', type=str, help='Name of the database to upload to')
     parser.add_argument('-t', '--table', type=str, help='Name of the table to upload to')
     parser.add_argument('-u', '--upload', action='store_true', help='Upload the data to Timestream via API')
@@ -23,6 +25,7 @@ if __name__ == "__main__":
     parser.add_argument("-s", "--streams", help="Comma separated list of streams to ingest e.g., 'acc,temp'.")
     parser.add_argument("-as", "--all-streams", help="Ingest all streams, ignore -s/--streams.",
                         action=argparse.BooleanOptionalAction)
+    parser.add_argument('-i', '--insights', action='store_true', help='Calculate insights for the data')
     parser.add_argument('--cleanup', action='store_true', help='Remove the unzipped files after uploading')
     args = parser.parse_args()
 
@@ -45,12 +48,22 @@ if __name__ == "__main__":
         # if it's not, just get the file path
         file_paths = [args.path]
 
-    # filter the path list based on --as or -s
-    if not args.all_streams:
-        if args.streams is None:
-            raise ValueError("You must specify a stream to ingest or all streams.")
-        else:
-            file_paths = extract_streams_from_pathlist(file_paths, args.streams)
-
     if args.prep:
+        # filter the path list based on --as or -s
+        if not args.all_streams:
+            if args.streams is None:
+                raise ValueError("You must specify a stream to ingest or all streams.")
+            else:
+                file_paths = extract_streams_from_pathlist(file_paths, args.streams)
+        streams = args.streams if args.streams else 'acc,eda,temp'
         print("Prepping files for bulk upload")
+        # prep the files for bulk upload
+        output = args.output if args.output else '.'
+        raw_to_batch_format(file_paths, streams=streams, verbose=args.verbose, output_dir=output)
+        print("Done prepping files for bulk upload")
+
+    if args.insights:
+        file_paths = extract_streams_from_pathlist(file_paths, 'eda')
+        for path in file_paths:
+            print(path)
+            print(wear_time(path))

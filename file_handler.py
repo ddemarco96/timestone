@@ -111,6 +111,7 @@ def raw_to_batch_format(file_paths, output_dir='.', verbose=False, streams='eda,
     """
     # example path
     # Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/temp.csv
+    start_time = time.time()
     for stream_type in streams.split(","):
         output_index = 0
         for path in file_paths:
@@ -131,7 +132,7 @@ def raw_to_batch_format(file_paths, output_dir='.', verbose=False, streams='eda,
                 dtypes = {"Time": "str", "MeasureValue": "str"}
 
             with pd.read_csv(path, header=0, names=names, chunksize=chunksize, dtype=dtypes) as reader:
-                start_time = time.time()
+
 
                 for chunk in reader:  # each chunk is a df
                     chunks_read += 1
@@ -162,3 +163,4 @@ def raw_to_batch_format(file_paths, output_dir='.', verbose=False, streams='eda,
                     # append the contents of the dataframe to the output target csv
                     # include the header only if it's a new file
                     chunk.to_csv(output_path, mode="a", header=False, index=False)
+    print(f"Processed {records_read} records in {time.time() - start_time} seconds.") if verbose else None

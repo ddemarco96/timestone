@@ -2,12 +2,13 @@ import os
 import shutil
 import unittest
 import subprocess
+from datetime import datetime
 from io import StringIO
 from unittest.mock import patch
 
 import pandas as pd
 
-from timestone import unzip_walk, extract_streams_from_pathlist, raw_to_batch_format
+from timestone import unzip_walk, extract_streams_from_pathlist, raw_to_batch_format, wear_time
 
 
 class TestConvertRawToBatch(unittest.TestCase):
@@ -22,14 +23,14 @@ class TestConvertRawToBatch(unittest.TestCase):
         self.assertIn('Error: Please provide a path to the data to upload', str(output.stderr))
     def test_needs_stream(self):
         """Test that the timestone script requires a stream name"""
-        file_path = 'data/unzipped/2021-07/2021-07/U01/FC/155/2M4Y4111JM/acc.csv'
-        output = subprocess.run(['python', 'timestone.py', '--path', file_path], capture_output=True)
+        file_path = 'test_data/zips/Sensors_U02_ALLSITES_20190801_20190831.zip'
+        output = subprocess.run(['python', 'timestone.py', '--prep', '--path', file_path], capture_output=True)
         self.assertIn('Error: You must specify a stream to ingest or all streams.', str(output.stderr))
 
-        output_1 = subprocess.run(['python', 'timestone.py', '--path', file_path, '--streams', ' acc'], capture_output=True)
+        output_1 = subprocess.run(['python', 'timestone.py', '--prep', '--path', file_path, '--streams', ' acc'], capture_output=True)
         self.assertEqual(output_1.returncode, 0)
 
-        output_2 = subprocess.run(['python', 'timestone.py', '--path', file_path, '--all-streams'],
+        output_2 = subprocess.run(['python', 'timestone.py', '--prep', '--path', file_path, '--all-streams'],
                                   capture_output=True)
         self.assertEqual(output_2.returncode, 0)
 
@@ -69,6 +70,20 @@ class TestFileHandlers(unittest.TestCase):
 
         shutil.rmtree('test_data/unzipped')
         shutil.rmtree('test_data/pending_upload')
+
+
+class WearTimeTest(unittest.TestCase):
+
+    def test_wear_time(self):
+        """Test that the wear time function returns the correct number of files"""
+        file_path = 'data/test_wear_time.csv'
+        output = wear_time(file_path)
+        self.assertEqual(output.shape[0], 2)
+        self.assertGreaterEqual(output.values[0], 15)
+        self.assertLessEqual(output.values[0], 25)
+        self.assertGreaterEqual(output.values[1], 30)
+        self.assertLessEqual(output.values[1], 45)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -1,4 +1,5 @@
 data
+pending_upload
 .DS_Store
 .idea
 __pycache__
