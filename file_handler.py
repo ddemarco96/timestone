@@ -7,6 +7,7 @@ import zipfile
 import shutil
 import re
 import pandas as pd
+import threading
 
 def unzip_walk(file_path, cleanup=True):
     """Unzip a file and return a list of file paths to any eda, temp, or acc csvs files within the unzipped directory.
@@ -41,6 +42,21 @@ def unzip_walk(file_path, cleanup=True):
     # cleanup by removing the unzipped dir if you want
     if cleanup:
         shutil.rmtree(unzipped_dir)
+    return file_paths
+
+def simple_walk(dir_path):
+    """Walk through a directory and return paths to all .csv files containing "eda", "temp" or "acc" in their names.
+    Parameters: dir_path (str): The path to the directory to walk through.
+    Returns: list: A list of strings containing paths to the relevant .csv files
+    Examples:
+       simple_walk('/home/user/data')
+       # ['/home/user/data/eda.csv', '/home/user/data/temp.csv', '/home/user/data/acc.csv']
+    """
+    file_paths = []
+    for root, dirs, files in os.walk(dir_path):
+        for file in files:
+            if file.endswith(".csv") and ("eda" in file or "temp" in file or "acc" in file):
+                file_paths.append(os.path.join(root, file))
     return file_paths
 
 def extract_ids_from_path(file_path):
@@ -90,9 +106,12 @@ def create_output_file(output_path: str, stream: str) -> None:
     with open(output_path, "w", newline="") as csvfile:
         writer = csv.writer(csvfile)
         if stream == "acc":
-            writer.writerow(['Time', 'x', 'y', 'z', 'ppt_id', 'dev_id'])
+            writer.writerow(['Time', 'x', 'y', 'z', 'ppt_id', 'dev_id', 'MeasureName'])
         else:
-            writer.writerow(['Time', 'MeasureValue', 'ppt_id', 'dev_id'])
+            writer.writerow(['Time', 'MeasureValue', 'ppt_id', 'dev_id', 'MeasureName'])
+
+# https://boto3.amazonaws.com/v1/documentation/api/latest/guide/s3-uploading-files.html
+
 
 def raw_to_batch_format(file_paths, output_dir='.', verbose=False, streams='eda,temp,acc'):
     """Processes a list of file paths and formats them for upload to AWS Timestream in batches.
@@ -140,8 +159,13 @@ def raw_to_batch_format(file_paths, output_dir='.', verbose=False, streams='eda,
                     print(f"Processing chunk {chunks_read} with {chunk.shape[0]} records...") if verbose else None
                     chunk['dev_id'] = device_id
                     chunk['ppt_id'] = ppt_id
+                    chunk['MEASURE_NAME'] = stream
+                    if stream == "eda":
+                        # convert any measures of "-0.0" to "0.0"
+                        chunk['MeasureValue'] = chunk['MeasureValue'].replace("-0.0", "0.0")
+
                     # check if an output file exists in the path `pending_upload/[month]/[stream]/combined_[index].csv`
-                    output_path = os.path.join(output_dir, "pending_upload", month, stream, f"combined_{output_index}.csv")
+                    output_path = os.path.join(output_dir, "pending_upload", month, stream, f"{stream}_combined_{output_index}.csv")
                     if not os.path.exists(os.path.dirname(output_path)):
                         os.makedirs(os.path.dirname(output_path))
                         if not os.path.exists(output_path):
@@ -156,7 +180,7 @@ def raw_to_batch_format(file_paths, output_dir='.', verbose=False, streams='eda,
                     if output_size > 4.9 * 10**9:
                         # increment index and create a new file
                         output_index += 1
-                        output_path = os.path.join(output_dir, "pending_upload", month, stream, f"combined_{output_index}.csv")
+                        output_path = os.path.join(output_dir, "pending_upload", month, stream, f"{stream}_combined_{output_index}.csv")
                         print(f"Creating new file: {output_path}") if verbose else None
                         create_output_file(output_path, stream)
 

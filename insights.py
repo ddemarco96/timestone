@@ -8,6 +8,7 @@ def wear_time(file_path):
     Example: wear_time("data/example.csv")
     """
     df = pd.read_csv(file_path)
+    # breakpoint()
     EDA_filter = 0.03
     df['Time'] = pd.to_datetime(df['Time'], unit="ms")
     month = df['Time'].dt.month[0]

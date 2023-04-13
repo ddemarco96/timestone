@@ -8,7 +8,9 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from timestone import unzip_walk, extract_streams_from_pathlist, raw_to_batch_format, wear_time
+from timestone import (
+    unzip_walk, extract_streams_from_pathlist, raw_to_batch_format, wear_time, simple_walk
+)
 
 
 class TestConvertRawToBatch(unittest.TestCase):
@@ -61,9 +63,9 @@ class TestFileHandlers(unittest.TestCase):
         self.assertEqual(len(os.listdir('test_data/pending_upload')), 1)
         self.assertEqual(os.listdir('test_data/pending_upload/')[0], '20190801_20190831')
         self.assertEqual(os.listdir('test_data/pending_upload/20190801_20190831')[0], 'eda')
-        self.assertEqual(os.listdir('test_data/pending_upload/20190801_20190831/eda')[0], 'combined_0.csv')
+        self.assertEqual(os.listdir('test_data/pending_upload/20190801_20190831/eda')[0], 'eda_combined_0.csv')
 
-        df = pd.read_csv('test_data/pending_upload/20190801_20190831/eda/combined_0.csv')
+        df = pd.read_csv('test_data/pending_upload/20190801_20190831/eda/eda_combined_0.csv')
         num_lines = 9  # number of eda lines in the test data
         num_files = 6  # 2 devices for 2 ppts, 1 device for two other ppts
         self.assertEqual(df.shape[0], num_lines * num_files)
@@ -83,6 +85,33 @@ class WearTimeTest(unittest.TestCase):
         self.assertLessEqual(output.values[0], 25)
         self.assertGreaterEqual(output.values[1], 30)
         self.assertLessEqual(output.values[1], 45)
+
+class SimpleWalkTestCase(unittest.TestCase):
+    def setUp(self):
+        # Define the directory path and create sample files
+        self.dir_path = './test_data/simple_walk'
+        os.makedirs(self.dir_path, exist_ok=True)
+        open(os.path.join(self.dir_path, 'eda.csv'), 'w').close()
+        open(os.path.join(self.dir_path, 'temp.csv'), 'w').close()
+        open(os.path.join(self.dir_path, 'acc.csv'), 'w').close()
+        open(os.path.join(self.dir_path, 'other.csv'), 'w').close()
+
+    def tearDown(self):
+        # Remove the sample files and directory
+        os.remove(os.path.join(self.dir_path, 'eda.csv'))
+        os.remove(os.path.join(self.dir_path, 'temp.csv'))
+        os.remove(os.path.join(self.dir_path, 'acc.csv'))
+        os.remove(os.path.join(self.dir_path, 'other.csv'))
+        os.rmdir(self.dir_path)
+
+    def test_simple_walk(self):
+        # Define the test case
+        expected_paths = [
+            '/test_data/eda.csv',
+            '/test_data/temp.csv',
+            '/test_data/acc.csv']
+        result_paths = simple_walk(self.dir_path)
+        self.assertEqual(result_paths.sort(), expected_paths.sort())
 
 
 if __name__ == '__main__':

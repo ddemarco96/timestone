@@ -8,7 +8,7 @@ from io import StringIO
 import awswrangler as wr
 
 from csv_ingestor import CSVIngestor
-from uploader import unzip_walk, extract_streams_from_pathlist
+from old_uploader import unzip_walk, extract_streams_from_pathlist
 
 
 class TestGetFileInfo(TestCase):
