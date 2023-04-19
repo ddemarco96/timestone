@@ -8,14 +8,14 @@ from io import StringIO
 import awswrangler as wr
 
 from csv_ingestor import CSVIngestor
-from uploader import unzip_walk, extract_streams_from_pathlist
+from old_uploader import unzip_walk, extract_streams_from_pathlist
 
 
 class TestGetFileInfo(TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.file_path = "data/unzipped/allsites_month/FC/155/2M4Y4111JM/temp.csv"
+        cls.file_path = "data/unzipped/2021-07/2021-07/U01/FC/155/2M4Y4111JM/temp.csv"
         cls.zippath = "data/zips/2021-07.zip"
         cls.path_list = cls.file_path.split('/')
         cls.device_id = cls.path_list[-2]
@@ -85,24 +85,24 @@ class TestGetFileInfo(TestCase):
         test_file_path = "test_data/zips/Sensors_U02_ALLSITES_20190801_20190831.zip"
         file_paths = unzip_walk(test_file_path, cleanup=True)
         expected_paths = [
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/acc.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/ABCDE12345/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/ABCDE12345/acc.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/ABCDE12345/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/12345ABCDE/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/12345ABCDE/acc.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/12345ABCDE/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/096/2M4Y4111FK/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/096/2M4Y4111FK/acc.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/096/2M4Y4111FK/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/ABCDE12345/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/ABCDE12345/acc.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/ABCDE12345/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/12345ABCDE/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/12345ABCDE/acc.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/12345ABCDE/eda.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/temp.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/acc.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/eda.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/ABCDE12345/temp.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/ABCDE12345/acc.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/ABCDE12345/eda.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/12345ABCDE/temp.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/12345ABCDE/acc.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/12345ABCDE/eda.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/096/2M4Y4111FK/temp.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/096/2M4Y4111FK/acc.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/096/2M4Y4111FK/eda.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/ABCDE12345/temp.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/ABCDE12345/acc.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/ABCDE12345/eda.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/12345ABCDE/temp.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/12345ABCDE/acc.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/12345ABCDE/eda.csv',
         ]
         self.assertTrue(all([path in file_paths for path in expected_paths]))
         self.assertFalse(os.path.exists("test_data/unzipped/"))
@@ -111,24 +111,24 @@ class TestGetFileInfo(TestCase):
         test_file_path = "test_data/zips/Sensors_U02_ALLSITES_20190801_20190831.zip"
         file_paths = unzip_walk(test_file_path, cleanup=False)
         expected_paths = [
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/acc.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/ABCDE12345/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/ABCDE12345/acc.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/ABCDE12345/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/12345ABCDE/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/12345ABCDE/acc.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/12345ABCDE/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/096/2M4Y4111FK/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/096/2M4Y4111FK/acc.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/096/2M4Y4111FK/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/ABCDE12345/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/ABCDE12345/acc.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/ABCDE12345/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/12345ABCDE/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/12345ABCDE/acc.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/12345ABCDE/eda.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/temp.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/acc.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/eda.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/ABCDE12345/temp.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/ABCDE12345/acc.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/ABCDE12345/eda.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/12345ABCDE/temp.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/12345ABCDE/acc.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/12345ABCDE/eda.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/096/2M4Y4111FK/temp.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/096/2M4Y4111FK/acc.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/096/2M4Y4111FK/eda.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/ABCDE12345/temp.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/ABCDE12345/acc.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/ABCDE12345/eda.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/12345ABCDE/temp.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/12345ABCDE/acc.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/12345ABCDE/eda.csv',
         ]
         self.assertTrue(all([path in file_paths for path in expected_paths]))
         self.assertTrue(os.path.exists("test_data/unzipped/"))
@@ -137,39 +137,39 @@ class TestGetFileInfo(TestCase):
     def test_path_filtering(self):
         streams = 'eda,temp'
         base_paths = [
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/acc.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/ABCDE12345/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/ABCDE12345/acc.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/ABCDE12345/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/12345ABCDE/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/12345ABCDE/acc.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/12345ABCDE/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/096/2M4Y4111FK/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/096/2M4Y4111FK/acc.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/096/2M4Y4111FK/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/ABCDE12345/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/ABCDE12345/acc.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/ABCDE12345/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/12345ABCDE/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/12345ABCDE/acc.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/12345ABCDE/eda.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/temp.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/acc.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/eda.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/ABCDE12345/temp.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/ABCDE12345/acc.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/ABCDE12345/eda.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/12345ABCDE/temp.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/12345ABCDE/acc.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/12345ABCDE/eda.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/096/2M4Y4111FK/temp.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/096/2M4Y4111FK/acc.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/096/2M4Y4111FK/eda.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/ABCDE12345/temp.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/ABCDE12345/acc.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/ABCDE12345/eda.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/12345ABCDE/temp.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/12345ABCDE/acc.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/12345ABCDE/eda.csv',
         ]
         filtered_paths = extract_streams_from_pathlist(base_paths, streams)
         expected_paths = [
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/ABCDE12345/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/ABCDE12345/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/12345ABCDE/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/12345ABCDE/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/096/2M4Y4111FK/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/096/2M4Y4111FK/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/ABCDE12345/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/ABCDE12345/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/12345ABCDE/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/12345ABCDE/eda.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/temp.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/eda.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/ABCDE12345/temp.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/ABCDE12345/eda.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/12345ABCDE/temp.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/12345ABCDE/eda.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/096/2M4Y4111FK/temp.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/096/2M4Y4111FK/eda.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/ABCDE12345/temp.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/ABCDE12345/eda.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/12345ABCDE/temp.csv',
+            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/12345ABCDE/eda.csv',
             ]
         self.assertEqual(filtered_paths, expected_paths)
 

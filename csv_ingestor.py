@@ -5,7 +5,7 @@ import time
 import pandas as pd
 import awswrangler as wr
 from sys import getsizeof
-from constants import DATABASE_NAME, TABLE_NAME
+from constants import DATABASE_NAME
 
 
 class CSVIngestor:
