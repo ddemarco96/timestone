@@ -4,3 +4,7 @@ pending_upload
 .idea
 __pycache__
 template_ingestor.py
+**/*.pyc
+**/*.pyo
+**/*.pyd
+ipynb_checkpoints/

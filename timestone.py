@@ -6,7 +6,7 @@ import zipfile
 
 from csv_ingestor import CSVIngestor
 from file_handler import unzip_walk, extract_streams_from_pathlist, raw_to_batch_format, simple_walk
-from insights import wear_time
+from insights import create_wear_time_summary
 from uploader import create_bucket, upload_to_s3
 from estimators import  walking_cost, walking_time
 
@@ -66,14 +66,14 @@ if __name__ == "__main__":
         raw_to_batch_format(file_paths, streams=streams, verbose=args.verbose, output_dir=output)
         print("Done prepping files for bulk upload")
 
-    if args.insights:
-        if args.prep:
-            raise ValueError("You have to prep and get insights in two different calls. "+
-                             "Don't forget to switch the path to the prepped files")
-        file_paths = extract_streams_from_pathlist(file_paths, 'eda')
-        for path in file_paths:
-            print(path)
-            print(wear_time(path))
+    # if args.insights:
+    #     if args.prep:
+    #         raise ValueError("You have to prep and get insights in two different calls. "+
+    #                          "Don't forget to switch the path to the prepped files")
+    #     file_paths = extract_streams_from_pathlist(file_paths, 'eda')
+    #     for path in file_paths:
+    #         print(path)
+    #         print(wear_time(path))
 
     if args.upload:
         # filter the path list based on --as or -s
@@ -90,3 +90,6 @@ if __name__ == "__main__":
         # upload the files to the bucket
         upload_to_s3(file_paths, args.bucket_name, s3_client)
 
+    if args.insights:
+        # save the wear time to a csv
+        create_wear_time_summary(ppt_list=args.ppts, list_filter=args.ppt_filter, output_dir=args.output, save=True)

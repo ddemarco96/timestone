@@ -5,12 +5,16 @@ import subprocess
 from datetime import datetime
 from io import StringIO
 from unittest.mock import patch
+import boto3
+from botocore.exceptions import ClientError
 
 import pandas as pd
 
 from timestone import (
-    unzip_walk, extract_streams_from_pathlist, raw_to_batch_format, wear_time, simple_walk
+    unzip_walk, extract_streams_from_pathlist, raw_to_batch_format,
+    create_wear_time_summary, simple_walk
 )
+from insights import get_all_ppts, filter_ppt_list, get_ppt_df, drop_low_values, get_wear_time_by_day
 
 
 class TestConvertRawToBatch(unittest.TestCase):
@@ -76,15 +80,143 @@ class TestFileHandlers(unittest.TestCase):
 
 class WearTimeTest(unittest.TestCase):
 
-    def test_wear_time(self):
-        """Test that the wear time function returns the correct number of files"""
-        file_path = 'data/test_wear_time.csv'
-        output = wear_time(file_path)
-        self.assertEqual(output.shape[0], 2)
-        self.assertGreaterEqual(output.values[0], 15)
-        self.assertLessEqual(output.values[0], 25)
-        self.assertGreaterEqual(output.values[1], 30)
-        self.assertLessEqual(output.values[1], 45)
+    # def test_old_wear_time(self):
+    #     """Test that the wear time function returns the correct number of files"""
+    #     file_path = 'data/test_wear_time.csv'
+    #     output = wear_time(file_path)
+    #     self.assertEqual(output.shape[0], 2)
+    #     self.assertGreaterEqual(output.values[0], 15)
+    #     self.assertLessEqual(output.values[0], 25)
+    #     self.assertGreaterEqual(output.values[1], 30)
+    #     self.assertLessEqual(output.values[1], 45)
+
+    @patch('insights.execute_query_and_return_as_dataframe')
+    def test_gets_ppt_list(self, mock_execute_query_and_return_as_df):
+        """Test that the get_ppt_list function returns the correct number of files"""
+        profile_name = 'nocklab'
+        session = boto3.Session(profile_name=profile_name)
+        query_client = session.client('timestream-query')
+
+        # mock the execute_query_and_return_as_df function
+        mock_df = pd.DataFrame({'ppt_id': ['fc100', 'mgh102', 'mgh103', 'mgh104']})
+        mock_execute_query_and_return_as_df.return_value = mock_df
+
+        ppt_list = get_all_ppts(query_client)
+        self.assertEqual(len(ppt_list), 4)
+
+    def test_list_filter(self):
+        """Test that passing regex filters the participants down to those in the regex"""
+        ppt_list = ['fc100', 'mgh102', 'mgh103', 'mgh104']
+        regex = 'mgh'
+        filtered_ppt_list = filter_ppt_list(ppt_list, regex)
+        self.assertEqual(len(filtered_ppt_list), 3)
+        self.assertEqual(filtered_ppt_list, ['mgh102', 'mgh103', 'mgh104'])
+
+    def test_list_filter_no_match(self):
+        """Test that passing regex filters the participants down to those in the regex"""
+        ppt_list = ['fc100', 'mgh102', 'mgh103', 'mgh104']
+        regex = 'MGH'
+        filtered_ppt_list = filter_ppt_list(ppt_list, regex)
+        self.assertEqual(len(filtered_ppt_list), 0)
+
+    @patch('insights.execute_query_and_return_as_dataframe')
+    def test_get_ppt_df(self, mock_execute_query_and_return_as_df):
+        """Test that the get_ppt_df function returns the correct number of files"""
+        profile_name = 'nocklab'
+        session = boto3.Session(profile_name=profile_name)
+        query_client = session.client('timestream-query')
+
+        # mock the execute_query_and_return_as_df function
+        mock_df = pd.DataFrame(
+            {'dev_id': [
+                '123ABC',
+                '123ABC',
+                '123ABC',
+            ],
+             'time': [
+                 '2020-10-29 11:00:17.990000000',
+                 '2020-10-29 11:00:18.240000000',
+                 '2020-10-29 11:00:18.490000000',
+             ],
+             'value': [
+                 0.000923,
+                 0.012794,
+                 0.001547,
+             ]}
+        )
+        mock_execute_query_and_return_as_df.return_value = mock_df
+
+        ppt_df = get_ppt_df(query_client, 'fc101')
+        self.assertEqual(ppt_df.shape[0], 3)
+
+    @patch('insights.execute_query_and_return_as_dataframe')
+    def test_drop_low_values(self, mock_execute_query_and_return_as_df):
+        """Test that the get_ppt_df function returns the correct number of files"""
+        profile_name = 'nocklab'
+        session = boto3.Session(profile_name=profile_name)
+        query_client = session.client('timestream-query')
+
+        # mock the execute_query_and_return_as_df function
+        # create a mock dataframe with 1000 rows, 300 of which are below 0.03
+        mock_df = pd.DataFrame({
+            'dev_id': ['123ABC'] * 1000,
+            'time': pd.date_range('2020-10-29 11:00:17.990000000', periods=1000, freq='s'),
+            'value': [0.000923] * 300 + [0.12794] * 700
+        })
+
+        mock_execute_query_and_return_as_df.return_value = mock_df
+
+        old_df = get_ppt_df(query_client, 'fc101')
+        new_df, start_len, end_len = drop_low_values(old_df, 0.03)
+        self.assertEqual(old_df.shape[0], 1000)
+        self.assertEqual(new_df.shape[0], 700)
+        self.assertEqual(start_len, 1000)
+        self.assertEqual(end_len, 700)
+
+    @patch('insights.execute_query_and_return_as_dataframe')
+    def test_generate_summary(self, mock_execute_query_and_return_as_df):
+        """Test that the get_ppt_df function returns the correct number of files"""
+        profile_name = 'nocklab'
+        session = boto3.Session(profile_name=profile_name)
+        query_client = session.client('timestream-query')
+
+        # mock the execute_query_and_return_as_df function
+        # create a mock dataframe with 1000 rows, 300 of which are below 0.03
+        mock_df = pd.DataFrame({
+            'dev_id': ['123ABC'] * 1000,
+            'time': pd.date_range('2020-10-29 11:00:17.990000000', periods=1000, freq='s'),
+            'value': [0.000923] * 300 + [0.12794] * 700
+        })
+
+        mock_execute_query_and_return_as_df.return_value = mock_df
+
+        old_df = get_ppt_df(query_client, 'fc101')
+        new_df, start_len, end_len = drop_low_values(old_df, 0.03)
+        summary_df = get_wear_time_by_day(new_df)
+        breakpoint()
+        self.assertEqual(summary_df.shape[0], 1)
+
+        # divide by 4 because we have "4hz" measures every second
+        self.assertEqual(summary_df.iloc[0]['minutes_worn'], 700 / 60 / 4)
+        self.assertEqual(summary_df.iloc[0]['percent_worn'], 700 / 86400 / 4)
+
+    def test_byte_count(self):
+        """Test that the get_ppt_df function returns the correct number of files"""
+        profile_name = 'nocklab'
+        session = boto3.Session(profile_name=profile_name)
+        query_client = session.client('timestream-query')
+
+
+        old_df = get_ppt_df(query_client, 'fc101')
+        new_df, start_len, end_len = drop_low_values(old_df, 0.03)
+        summary_df = get_wear_time_by_day(new_df)
+        breakpoint()
+        self.assertEqual(summary_df.shape[0], 1)
+
+        # divide by 4 because we have "4hz" measures every second
+        self.assertEqual(summary_df.iloc[0]['minutes_worn'], 700 / 60 / 4)
+        self.assertEqual(summary_df.iloc[0]['percent_worn'], 700 / 86400 / 4)
+
 
 class SimpleWalkTestCase(unittest.TestCase):
     def setUp(self):
