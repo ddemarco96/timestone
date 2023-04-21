@@ -51,15 +51,16 @@ def drop_low_values(df, threshold=0.03):
     df.time = pd.to_datetime(df.time)
     first_time = df.time.min()
     last_time = df.time.max()
-    # start at the first time, to last time, in 10 second windows
-    for time in pd.date_range(start=first_time, end=last_time, freq='10S'):
-        # select this window
-        window = df.loc[(df.time >= time) & (df.time < time + pd.Timedelta(seconds=10))]
-        # if 90% of the measurements are < 0.3
-        if (window.value < threshold).sum() / len(window) > 0.9:
-            # drop this window in place
-            df = df.drop(window.index)
-    # select this window
+
+    # add a column for the number of seconds since the first time
+    df['seconds_since_first'] = (df.time - first_time).dt.total_seconds()
+    # bin the seconds into 10sec windows -- it is MUCH faster to do it this way then to for loop
+    df['10s_from_first'] = df['seconds_since_first'] // 10
+    grp = df.groupby('10s_from_first')
+    # drop all rows where 90% of the values are below the threshold
+    df['drop_group'] = grp.value.transform(lambda x: (x < threshold).sum() / len(x) > 0.9)
+    df = df.loc[~df.drop_group]
+
     ending_len = df.shape[0]
 
     return df, starting_len, ending_len

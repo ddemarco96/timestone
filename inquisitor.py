@@ -184,8 +184,8 @@ def execute_query(client, query, timing = False, log_file = None):
             print(timing_msg)
             bytes_scanned = pages[-1]['QueryStatus']['CumulativeBytesScanned']
             bytes_per_GB = 1000 * 1000 * 1000
-            # cost is 0.01 per GB scanned
-            query_cost = round((bytes_scanned / bytes_per_GB) * 0.01, 2)
+            # cost is 0.01 per GB scanned, report a minimum of 0.01 to avoid confusion
+            query_cost = max(round((bytes_scanned / bytes_per_GB) * 0.01, 3), 0.01)
             print("Est. Query cost: $", query_cost)
             if log_file != None:
                 log_file.write("{}\n".format(timing_msg))
