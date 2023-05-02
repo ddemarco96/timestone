@@ -167,7 +167,7 @@ class WearTimeTest(unittest.TestCase):
         mock_execute_query_and_return_as_df.return_value = mock_df
 
         old_df = get_ppt_df(query_client, 'fc101')
-        new_df, start_len, end_len = drop_low_values(old_df, 0.03)
+        new_df, start_len, end_len = drop_low_values(old_df, ppt_id='fc101', output_dir='.', threshold=0.03)
         self.assertEqual(old_df.shape[0], 1000)
         self.assertEqual(new_df.shape[0], 700)
         self.assertEqual(start_len, 1000)
@@ -191,32 +191,13 @@ class WearTimeTest(unittest.TestCase):
         mock_execute_query_and_return_as_df.return_value = mock_df
 
         old_df = get_ppt_df(query_client, 'fc101')
-        new_df, start_len, end_len = drop_low_values(old_df, 0.03)
+        new_df, start_len, end_len = drop_low_values(old_df, ppt_id='fc101', output_dir='.', threshold=0.03)
         summary_df = get_wear_time_by_day(new_df)
-        breakpoint()
         self.assertEqual(summary_df.shape[0], 1)
 
         # divide by 4 because we have "4hz" measures every second
         self.assertEqual(summary_df.iloc[0]['minutes_worn'], 700 / 60 / 4)
         self.assertEqual(summary_df.iloc[0]['percent_worn'], 700 / 86400 / 4)
-
-    def test_byte_count(self):
-        """Test that the get_ppt_df function returns the correct number of files"""
-        profile_name = 'nocklab'
-        session = boto3.Session(profile_name=profile_name)
-        query_client = session.client('timestream-query')
-
-
-        old_df = get_ppt_df(query_client, 'fc101')
-        new_df, start_len, end_len = drop_low_values(old_df, 0.03)
-        summary_df = get_wear_time_by_day(new_df)
-        breakpoint()
-        self.assertEqual(summary_df.shape[0], 1)
-
-        # divide by 4 because we have "4hz" measures every second
-        self.assertEqual(summary_df.iloc[0]['minutes_worn'], 700 / 60 / 4)
-        self.assertEqual(summary_df.iloc[0]['percent_worn'], 700 / 86400 / 4)
-
 
 class SimpleWalkTestCase(unittest.TestCase):
     def setUp(self):

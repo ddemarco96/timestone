@@ -6,7 +6,7 @@ import zipfile
 
 from csv_ingestor import CSVIngestor
 from file_handler import unzip_walk, extract_streams_from_pathlist, raw_to_batch_format, simple_walk
-from insights import create_wear_time_summary
+from insights import create_wear_time_summary, get_all_ppts
 from uploader import create_bucket, upload_to_s3
 from estimators import  walking_cost, walking_time
 
@@ -14,6 +14,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Tools for helping to upload embrace data to Amazon Timestream')
     # parser.add_argument('-h', '--help', action='help', help='Show this help message and exit')
     parser.add_argument('--path', type=str, help='Path to the folder containing the data to upload')
+    parser.add_argument('--ppts', type=str, help='Comma separated list of ppts to upload e.g., "1,2,3"')
+    parser.add_argument('--list-filter', type=str, help='Regex pattern to reduce the list of ppts to upload e.g., "1[0-9]')
     parser.add_argument('-o', '--output', type=str, help='Path to the folder to output the data to')
     parser.add_argument('-db', '--database', type=str, help='Name of the database to upload to')
     parser.add_argument('-t', '--table', type=str, help='Name of the table to upload to')
@@ -37,20 +39,21 @@ if __name__ == "__main__":
     # prep for bulk upload via s3
     # upload via s3
 
-    if args.path is None:
+    if args.path is None and not args.insights:
         raise ValueError("Please provide a path to the data to upload")
 
-    # check if the file_path is a zip file
-    if args.path.endswith(".zip"):
-        # if it is, unzip it and get the file paths to all the csvs
-        file_paths = unzip_walk(args.path, cleanup=False)
-    # if the path is a directory
-    elif os.path.isdir(args.path):
-        # walk without unzipping
-        file_paths = simple_walk(args.path)
-    else:
-        # if it's not, just get the file path
-        file_paths = [args.path]
+    if args.path is not None:
+        # check if the file_path is a zip file
+        if args.path.endswith(".zip"):
+            # if it is, unzip it and get the file paths to all the csvs
+            file_paths = unzip_walk(args.path, cleanup=False)
+        # if the path is a directory
+        elif os.path.isdir(args.path):
+            # walk without unzipping
+            file_paths = simple_walk(args.path)
+        else:
+            # if it's not, just get the file path
+            file_paths = [args.path]
 
     if args.prep:
         # filter the path list based on --as or -s
@@ -91,5 +94,15 @@ if __name__ == "__main__":
         upload_to_s3(file_paths, args.bucket_name, s3_client)
 
     if args.insights:
-        # save the wear time to a csv
-        create_wear_time_summary(ppt_list=args.ppts, list_filter=args.ppt_filter, output_dir=args.output, save=True)
+        # use input to check whether they want a summary of wear time or list of participants
+        choice = input("Do you want a summary of wear time or a list of participants? (s/l) ")
+        if choice == 's':
+            # save the wear time to a csv
+            create_wear_time_summary(
+                ppt_list=args.ppts.split(','),
+                list_filter=args.list_filter,
+                output_dir=args.output,
+                save=True)
+        if choice == 'l':
+            # print the list of participants
+            print(get_all_ppts())
