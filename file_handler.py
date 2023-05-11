@@ -188,3 +188,22 @@ def raw_to_batch_format(file_paths, output_dir='.', verbose=False, streams='eda,
                     # include the header only if it's a new file
                     chunk.to_csv(output_path, mode="a", header=False, index=False)
     print(f"Processed {records_read} records in {time.time() - start_time} seconds.") if verbose else None
+
+def smart_drop_dupes(df, verbose=True, path=None, save=True):
+    old_shape = df.shape[0]
+    # get the list of unique times
+    unique_times = df.drop_duplicates('Time', keep=False)['Time']
+
+    for t in unique_times:
+        assert df.loc[df['Time'] == t, 'MeasureValue'].unique.shape[0] == 1
+
+    # filter the df down to only the first of the duplicate rows
+    df = df.drop_duplicates('Time', keep=True)
+    new_shape = df.shape[0]
+    num_rows = new_shape - old_shape
+    pct = round(num_rows / old_shape, 2) * 100
+    print(f"Dropping {num_rows} ({pct}%) rows from {path}") if verbose else None
+    if save:
+        df.to_csv(path, index=False)
+    return df
+

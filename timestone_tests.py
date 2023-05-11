@@ -12,7 +12,7 @@ import pandas as pd
 
 from timestone import (
     unzip_walk, extract_streams_from_pathlist, raw_to_batch_format,
-    create_wear_time_summary, simple_walk
+    create_wear_time_summary, simple_walk, smart_drop_dupes
 )
 from insights import get_all_ppts, filter_ppt_list, get_ppt_df, drop_low_values, get_wear_time_by_day
 
@@ -80,21 +80,11 @@ class TestFileHandlers(unittest.TestCase):
 
 class WearTimeTest(unittest.TestCase):
 
-    # def test_old_wear_time(self):
-    #     """Test that the wear time function returns the correct number of files"""
-    #     file_path = 'data/test_wear_time.csv'
-    #     output = wear_time(file_path)
-    #     self.assertEqual(output.shape[0], 2)
-    #     self.assertGreaterEqual(output.values[0], 15)
-    #     self.assertLessEqual(output.values[0], 25)
-    #     self.assertGreaterEqual(output.values[1], 30)
-    #     self.assertLessEqual(output.values[1], 45)
-
     @patch('insights.execute_query_and_return_as_dataframe')
     def test_gets_ppt_list(self, mock_execute_query_and_return_as_df):
         """Test that the get_ppt_list function returns the correct number of files"""
         profile_name = 'nocklab'
-        session = boto3.Session(profile_name=profile_name)
+        session = boto3.Session(profile_name=profile_name, region_name='us-east-1')
         query_client = session.client('timestream-query')
 
         # mock the execute_query_and_return_as_df function
@@ -123,7 +113,7 @@ class WearTimeTest(unittest.TestCase):
     def test_get_ppt_df(self, mock_execute_query_and_return_as_df):
         """Test that the get_ppt_df function returns the correct number of files"""
         profile_name = 'nocklab'
-        session = boto3.Session(profile_name=profile_name)
+        session = boto3.Session(profile_name=profile_name, region_name='us-east-1')
         query_client = session.client('timestream-query')
 
         # mock the execute_query_and_return_as_df function
@@ -153,7 +143,7 @@ class WearTimeTest(unittest.TestCase):
     def test_drop_low_values(self, mock_execute_query_and_return_as_df):
         """Test that the get_ppt_df function returns the correct number of files"""
         profile_name = 'nocklab'
-        session = boto3.Session(profile_name=profile_name)
+        session = boto3.Session(profile_name=profile_name, region_name='us-east-1')
         query_client = session.client('timestream-query')
 
         # mock the execute_query_and_return_as_df function
@@ -177,7 +167,7 @@ class WearTimeTest(unittest.TestCase):
     def test_generate_summary(self, mock_execute_query_and_return_as_df):
         """Test that the get_ppt_df function returns the correct number of files"""
         profile_name = 'nocklab'
-        session = boto3.Session(profile_name=profile_name)
+        session = boto3.Session(profile_name=profile_name, region_name='us-east-1')
         query_client = session.client('timestream-query')
 
         # mock the execute_query_and_return_as_df function
@@ -225,6 +215,29 @@ class SimpleWalkTestCase(unittest.TestCase):
             '/test_data/acc.csv']
         result_paths = simple_walk(self.dir_path)
         self.assertEqual(result_paths.sort(), expected_paths.sort())
+
+class SmartDropTests(unittest.TestCase):
+
+    def test_smart_drop_dupes(self, mock_execute_query_and_return_as_df):
+        """Test that the smart_drop_Dupes function returns a filtered _df"""
+
+        # mock the execute_query_and_return_as_df function
+        # create a mock dataframe with 1000 rows, 300 of which are below 0.03
+        mock_df = pd.DataFrame({
+            'dev_id': ['123ABC'] * 1000,
+            'time': pd.date_range('2020-10-29 11:00:17.990000000', periods=1000, freq='s'),
+            'value': [0.000923] * 300 + [0.12794] * 700
+        })
+
+        comb = pd.concat([mock_df, mock_df])  # 2k rows, 1k dupes
+
+
+
+        new_df = smart_drop_dupes(comb, verbose=True, path='.', save=False)
+        self.assertEqual(new_df.shape[0], 1000)
+
+        # divide by 4 because we have "4hz" measures every second
+
 
 
 if __name__ == '__main__':

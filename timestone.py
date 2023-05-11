@@ -3,9 +3,10 @@ import argparse
 import os
 import shutil
 import zipfile
+import pandas as pd
 
 from csv_ingestor import CSVIngestor
-from file_handler import unzip_walk, extract_streams_from_pathlist, raw_to_batch_format, simple_walk
+from file_handler import unzip_walk, extract_streams_from_pathlist, raw_to_batch_format, simple_walk, smart_drop_dupes
 from insights import create_wear_time_summary, get_all_ppts
 from uploader import create_bucket, upload_to_s3
 from estimators import  walking_cost, walking_time
@@ -68,6 +69,11 @@ if __name__ == "__main__":
         output = args.output if args.output else '.'
         raw_to_batch_format(file_paths, streams=streams, verbose=args.verbose, output_dir=output)
         print("Done prepping files for bulk upload")
+
+    if args.handle_duplicates:
+        for path in file_paths:
+            df = pd.read_csv(path)
+            _ = smart_drop_dupes(df, verbose=True, path=path, save=True)
 
     # if args.insights:
     #     if args.prep:
