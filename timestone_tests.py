@@ -9,11 +9,10 @@ import boto3
 from botocore.exceptions import ClientError
 
 import pandas as pd
-import numpy as np
 
 from timestone import (
     unzip_walk, extract_streams_from_pathlist, raw_to_batch_format,
-    create_wear_time_summary, simple_walk, handle_duplicates
+    create_wear_time_summary, simple_walk, smart_drop_dupes
 )
 from insights import get_all_ppts, filter_ppt_list, get_ppt_df, drop_low_values, get_wear_time_by_day
 
@@ -21,7 +20,7 @@ from insights import get_all_ppts, filter_ppt_list, get_ppt_df, drop_low_values,
 class TestConvertRawToBatch(unittest.TestCase):
     def test_call_timestone(self):
         """Test that the timestone script can be called with the --help flag"""
-        subprocess.check_output(['python', 'timestone.py', '-h'], stderr=subprocess.STDOUT, universal_newlines=True)
+        subprocess.check_output(['python', 'timestone.py', '--h'], stderr=subprocess.STDOUT, universal_newlines=True)
 
     def test_needs_path(self):
         """Test that the timestone script requires a path to a directory"""
@@ -81,21 +80,11 @@ class TestFileHandlers(unittest.TestCase):
 
 class WearTimeTest(unittest.TestCase):
 
-    # def test_old_wear_time(self):
-    #     """Test that the wear time function returns the correct number of files"""
-    #     file_path = 'data/test_wear_time.csv'
-    #     output = wear_time(file_path)
-    #     self.assertEqual(output.shape[0], 2)
-    #     self.assertGreaterEqual(output.values[0], 15)
-    #     self.assertLessEqual(output.values[0], 25)
-    #     self.assertGreaterEqual(output.values[1], 30)
-    #     self.assertLessEqual(output.values[1], 45)
-
     @patch('insights.execute_query_and_return_as_dataframe')
     def test_gets_ppt_list(self, mock_execute_query_and_return_as_df):
         """Test that the get_ppt_list function returns the correct number of files"""
         profile_name = 'nocklab'
-        session = boto3.Session(profile_name=profile_name)
+        session = boto3.Session(profile_name=profile_name, region_name='us-east-1')
         query_client = session.client('timestream-query')
 
         # mock the execute_query_and_return_as_df function
@@ -124,7 +113,7 @@ class WearTimeTest(unittest.TestCase):
     def test_get_ppt_df(self, mock_execute_query_and_return_as_df):
         """Test that the get_ppt_df function returns the correct number of files"""
         profile_name = 'nocklab'
-        session = boto3.Session(profile_name=profile_name)
+        session = boto3.Session(profile_name=profile_name, region_name='us-east-1')
         query_client = session.client('timestream-query')
 
         # mock the execute_query_and_return_as_df function
@@ -154,7 +143,7 @@ class WearTimeTest(unittest.TestCase):
     def test_drop_low_values(self, mock_execute_query_and_return_as_df):
         """Test that the get_ppt_df function returns the correct number of files"""
         profile_name = 'nocklab'
-        session = boto3.Session(profile_name=profile_name)
+        session = boto3.Session(profile_name=profile_name, region_name='us-east-1')
         query_client = session.client('timestream-query')
 
         # mock the execute_query_and_return_as_df function
@@ -178,7 +167,7 @@ class WearTimeTest(unittest.TestCase):
     def test_generate_summary(self, mock_execute_query_and_return_as_df):
         """Test that the get_ppt_df function returns the correct number of files"""
         profile_name = 'nocklab'
-        session = boto3.Session(profile_name=profile_name)
+        session = boto3.Session(profile_name=profile_name, region_name='us-east-1')
         query_client = session.client('timestream-query')
 
         # mock the execute_query_and_return_as_df function
@@ -227,53 +216,28 @@ class SimpleWalkTestCase(unittest.TestCase):
         result_paths = simple_walk(self.dir_path)
         self.assertEqual(result_paths.sort(), expected_paths.sort())
 
-class TestDuplicateHandling(unittest.TestCase):
-    def setUp(self):
-        # Define the directory path and create sample files
-        self.dir_path = './test_data/duplicate_handling'
-        os.makedirs(self.dir_path, exist_ok=True)
-        """
-        create a mock dataframe with 1000 rows, 
-           400 for ppt_id 1001 (dev_id 123ABC) and 600 for ppt_id 1002 (dev_id 456DEF)
-           values can be a random number between 0 and 1
-        """
+class SmartDropTests(unittest.TestCase):
+
+    def test_smart_drop_dupes(self, mock_execute_query_and_return_as_df):
+        """Test that the smart_drop_Dupes function returns a filtered _df"""
+
+        # mock the execute_query_and_return_as_df function
+        # create a mock dataframe with 1000 rows, 300 of which are below 0.03
         mock_df = pd.DataFrame({
-            'ppt_id': ['1001'] * 400 + ['1002'] * 600,
-            'dev_id': ['123ABC'] * 400 + ['456DEF'] * 600,
-            'Time': pd.date_range('2020-10-29 11:00:17.990000000', periods=1000, freq='s'),
-            'MeasureValue': np.random.rand(1000),
-            'MeasureName': ['eda'] * 1000
+            'dev_id': ['123ABC'] * 1000,
+            'time': pd.date_range('2020-10-29 11:00:17.990000000', periods=1000, freq='s'),
+            'value': [0.000923] * 300 + [0.12794] * 700
         })
-        # concat 200 rows for ppt 1001 (dev_id 123ABC) that are duplicates of the first 200 rows in terms of time but
-        # have different measure values
-        mock_df = pd.concat([mock_df, pd.DataFrame({
-            'ppt_id': ['1001'] * 200,
-            'dev_id': ['123ABC'] * 200,
-            'Time': pd.date_range('2020-10-29 11:00:17.990000000', periods=200, freq='s'),
-            'MeasureValue': np.random.rand(200),
-            'MeasureName': ['eda'] * 200
-        })])
-        # duplicate (perfectly identical) the last 200 rows of the df
-        mock_df = pd.concat(mock_df, mock_df.loc[-200:])
+
+        comb = pd.concat([mock_df, mock_df])  # 2k rows, 1k dupes
 
 
-        # save the df to a test csv file
-        mock_df.to_csv(os.path.join(self.dir_path, 'eda_combined_0.csv'), index=False)
 
+        new_df = smart_drop_dupes(comb, verbose=True, path='.', save=False)
+        self.assertEqual(new_df.shape[0], 1000)
 
-    def tearDown(self):
-        # Remove the sample files and directory
-        os.remove(os.path.join(self.dir_path, 'eda_combined_0.csv'))
-        os.rmdir(self.dir_path)
+        # divide by 4 because we have "4hz" measures every second
 
-    def test_duplicate_handling(self):
-        # test that duplicates are detected and removed from the csv file
-        path = os.path.join(self.dir_path, 'eda_combined_0.csv')
-        current_log, rows_dropped = handle_duplicates([path], scan_only=True, verbose=False)
-        # check if the file has the correct number of rows
-        self.assertEqual(rows_dropped, 600)
-        # check if the log has a note of which participants were removed and how many duplicates were found
-        self.assertEqual(current_log['ids_with_duplicates'][0], [1001])
 
 
 if __name__ == '__main__':

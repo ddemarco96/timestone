@@ -237,3 +237,23 @@ def handle_duplicates(file_paths, scan_only=True, verbose=False):
 
     current_log = pd.DataFrame(duplicate_log, columns=["path", "ids_with_duplicates"])
     return current_log, rows_dropped
+
+def smart_drop_dupes(df, verbose=True, path=None, save=True):
+    old_shape = df.shape[0]
+    # get the list of unique times
+    unique_times = df.drop_duplicates('Time', keep=False)['Time']
+
+    for t in unique_times:
+        assert df.loc[df['Time'] == t, 'MeasureValue'].unique.shape[0] == 1
+
+    # filter the df down to only the first of the duplicate rows
+    df = df.drop_duplicates('Time', keep=True)
+    new_shape = df.shape[0]
+    num_rows = new_shape - old_shape
+    pct = round(num_rows / old_shape, 2) * 100
+    print(f"Dropping {num_rows} ({pct}%) rows from {path}") if verbose else None
+    if save:
+        df.to_csv(path, index=False)
+    return df
+
+
