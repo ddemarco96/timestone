@@ -188,3 +188,52 @@ def raw_to_batch_format(file_paths, output_dir='.', verbose=False, streams='eda,
                     # include the header only if it's a new file
                     chunk.to_csv(output_path, mode="a", header=False, index=False)
     print(f"Processed {records_read} records in {time.time() - start_time} seconds.") if verbose else None
+
+def handle_duplicates(file_paths, scan_only=True, verbose=False):
+    """Removes and logs participants with duplicate data.
+
+    Args:
+        file_paths (list of str): A list of file paths to process.
+
+    Returns:
+        found_duplicates (df): df with columns "path" and "duplicates" for which participants were removed
+    """
+    duplicate_log = []
+    rows_dropped = 0
+    for path in file_paths:
+        df = pd.read_csv(path)
+        if df.duplicated(['Time', 'ppt_id', 'dev_id']).any():
+            # save a list of the participants with duplicates
+            mask = df.duplicated(['Time', 'ppt_id', 'dev_id'])
+            duplicate_ppts = df[mask]['ppt_id'].unique()
+            print(f"Found duplicate data for participant(s): {duplicate_ppts}") if verbose else None
+            # add the duplicates to the log
+            duplicate_log.append({
+                "path": path,
+                "ids_with_duplicates": duplicate_ppts.tolist()
+            })
+            # if we want them gone, remove them
+            if not scan_only:
+                # remove the participants with duplicates
+                df = df.loc[df['ppt_id'].isin(duplicate_ppts) == False]
+                df.to_csv(path, index=False)
+                rows_dropped += df.shape[0]
+            else:
+                # otherwise just say how many we would have dropped
+                rows_dropped += df.loc[df['ppt_id'].isin(duplicate_ppts) == False].shape[0]
+
+
+    if not scan_only:
+        # check if the file exists yet
+        if not os.path.exists("./logs/duplicate_log.csv"):
+            # create the file and add the header
+            pd.DataFrame(columns=["path", "ids_with_duplicates"]).to_csv("./logs/duplicate_log.csv", index=False)
+        # append the current log to the file
+        pd.DataFrame(duplicate_log).to_csv("./logs/duplicate_log.csv", index=False, mode="a", header=False)
+        # make sure we aren't duplicating the logs...(irony)
+        existing_log = pd.read_csv("./logs/duplicate_log.csv")
+        existing_log.drop_duplicates(inplace=True)
+        existing_log.to_csv("./logs/duplicate_log.csv", index=False)
+
+    current_log = pd.DataFrame(duplicate_log, columns=["path", "ids_with_duplicates"])
+    return current_log, rows_dropped

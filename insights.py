@@ -143,3 +143,32 @@ def create_wear_time_summary(ppt_list=[], list_filter=None, output_dir='.', save
     if save:
         summary_df.to_csv(f'{output_dir}/wear_time_summary.csv', index=False)
     return summary_df
+
+
+def get_duplicate_stats(df, is_acc=False):
+    base_subset = ['Time', 'ppt_id', 'dev_id']
+    val_subset = ['Time', 'ppt_id', 'dev_id', 'x', 'y', 'z'] if is_acc else ['Time', 'ppt_id', 'dev_id', 'MeasureValue']
+    mask_all = df.duplicated(subset=base_subset, keep=False)
+    num_dupes_all = mask_all.sum()
+    num_rows_all = mask_all.shape[0]
+    print("# dupes (all): ", num_dupes_all)
+    print("# rows (all): ", num_rows_all, f" ({round(num_dupes_all/num_rows_all, 2)*100}%)")
+    num_na_dupes = df[mask_all].x.isna().sum() if is_acc else df[mask_all].MeasureValue.isna().sum()
+    print("# dupes (NaN): ", num_na_dupes)
+    mask_perf = df.duplicated(subset=val_subset, keep=False)
+    num_dupes_perf = mask_perf.sum()
+    print("# dupes (perf): ", num_dupes_perf, f" ({round(num_dupes_perf/num_rows_all, 2)*100}%)")
+    mask_unc = df.duplicated(subset=base_subset, keep=False) & ~df.duplicated(subset=val_subset, keep=False)
+    num_dupes_unc = mask_unc.sum()
+    print("# dupes (unc): ", num_dupes_unc, f"({round(num_dupes_unc/num_rows_all,2)*100}%)")
+
+    total_ppts = df.ppt_id.nunique()
+    print("# ppts: ", total_ppts)
+    print("# ppts with dupes: ", df[mask_all].ppt_id.nunique(), f"({round(df[mask_all].ppt_id.nunique()/total_ppts,2)*100}%)")
+    nan_ppts = df.loc[df.x.isna(), 'ppt_id'].nunique() if is_acc else df.loc[df.MeasureValue.isna(), 'ppt_id'].nunique()
+    print("# ppts with NaN dupes: ", nan_ppts, f"({round(nan_ppts/total_ppts,2)*100}%)")
+    perf_ppts = df[mask_perf].ppt_id.nunique()
+    print("# ppts with perf dupes: ", perf_ppts, f"({round(perf_ppts/total_ppts,2)*100}%)" )
+    unc_ppts = df[mask_unc].ppt_id.nunique()
+    print("# ppts with unc dupes: ", unc_ppts, f"({round(unc_ppts/total_ppts,2)*100}%)" )
+    return mask_unc

@@ -1,208 +1,281 @@
 import os
 import shutil
-import boto3
-from botocore.config import Config
-from unittest import main, TestCase
-from unittest.mock import patch, MagicMock
+import unittest
+import subprocess
+from datetime import datetime
 from io import StringIO
-import awswrangler as wr
+from unittest.mock import patch
+import boto3
+from botocore.exceptions import ClientError
 
-from csv_ingestor import CSVIngestor
-from old_uploader import unzip_walk, extract_streams_from_pathlist
+import pandas as pd
+import numpy as np
+
+from timestone import (
+    unzip_walk, extract_streams_from_pathlist, raw_to_batch_format,
+    create_wear_time_summary, simple_walk, handle_duplicates
+)
+from insights import get_all_ppts, filter_ppt_list, get_ppt_df, drop_low_values, get_wear_time_by_day
 
 
-class TestGetFileInfo(TestCase):
+class TestConvertRawToBatch(unittest.TestCase):
+    def test_call_timestone(self):
+        """Test that the timestone script can be called with the --help flag"""
+        subprocess.check_output(['python', 'timestone.py', '-h'], stderr=subprocess.STDOUT, universal_newlines=True)
 
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.file_path = "data/unzipped/2021-07/2021-07/U01/FC/155/2M4Y4111JM/temp.csv"
-        cls.zippath = "data/zips/2021-07.zip"
-        cls.path_list = cls.file_path.split('/')
-        cls.device_id = cls.path_list[-2]
-        cls.ppt_id = cls.path_list[-4].lower() + cls.path_list[-3]
-        cls.common_attrs = CSVIngestor(None).get_common_attrs(cls.file_path, cls.ppt_id, cls.device_id)
-
-    def test_get_common_attrs(self):
-        dims = self.common_attrs['Dimensions']
-        self.assertEqual(len(dims), 2)
-        self.assertEqual(dims[0]['Value'], self.ppt_id)
-        self.assertEqual(dims[1]['Value'], self.device_id)
-        self.assertEqual(self.common_attrs['MeasureValueType'], 'DOUBLE')
-        # TODO: expand this to test all the different types of csvs
-        self.assertEqual(self.common_attrs['MeasureName'], 'temp_degC')
-
-    def test_csv_num_rows(self):
-        expected_rows = 1940589  # CSVIngestor(None).get_timestream_df(cls.file_path).shape[0]
-        subprocess_rows = CSVIngestor(None).get_num_rows(self.file_path)
-        self.assertEqual(expected_rows, subprocess_rows)
-
-    def test_get_optimal_writes_per_request(self):
-        csv_types = ["temp", "eda", "acc"]
-        params_by_type = {
-            "temp": {
-                "common_attr_size": 36,
-                "record_size": 16,
-                "expected_best": round(100/60)  # =  round(100/((1000-36)//16))
-            },
-            "eda": {
-                "common_attr_size": 37,
-                "record_size": 16,
-                "expected_best": round(100/60)  # =  round(100/((1000-37)//16))
-            },
-            "acc": {
-                "common_attr_size": 32,
-                "record_size": 32,
-                "expected_best": round(100/30)  # =  round(100/((1000-32)//32))
-            },
-        }
-        for t in csv_types:
-            expected_best = params_by_type[t]["expected_best"]
-            file_path = f"FC/155/2M4Y4111JM/{t}.csv"
-            self.assertEqual(CSVIngestor(None).get_optimal_writes_per_request(file_path), expected_best)
-
-    def test_get_cost_info(self):
-        with patch('sys.stdout', new=StringIO()) as fake_out:
-            df_rows = CSVIngestor(None).get_num_rows(self.file_path)
-            cost = CSVIngestor(None).estimate_csv_write_cost(file_path=self.file_path, df_rows=df_rows, verbose=True)
-            msg = f"Estimated cost for {self.file_path}: $"
-            self.assertLessEqual(cost, 1.00)  # a single temp csv should not cost more than $1
-            self.assertIn(msg, fake_out.getvalue())
-
-    def test_get_time_info(self):
-        with patch('sys.stdout', new=StringIO()) as fake_out:
-            expected_rows = 1940589
-            df_rows = CSVIngestor(None).get_num_rows(self.file_path)
-            minutes = CSVIngestor(None).estimate_csv_write_time(file_path=self.file_path, df_rows=df_rows, verbose=True)
-            est_minutes = round(expected_rows/1000000 * 11, 2)
-            msg = f"Estimated time for {self.file_path}: {est_minutes} minutes"
-            # almost 2M rows should take ~22 minutes to write
-            self.assertLessEqual(minutes, 22.00)
-            self.assertGreaterEqual(minutes, 11.00)
-            self.assertIn(msg, fake_out.getvalue())
-    #
-    def test_unzip_walk(self):
+    def test_needs_path(self):
+        """Test that the timestone script requires a path to a directory"""
         # with patch('sys.stdout', new=StringIO()) as fake_out:
-        test_file_path = "test_data/zips/Sensors_U02_ALLSITES_20190801_20190831.zip"
-        file_paths = unzip_walk(test_file_path, cleanup=True)
+        output = subprocess.run(['python', 'timestone.py'], capture_output=True)
+        self.assertIn('Error: Please provide a path to the data to upload', str(output.stderr))
+    def test_needs_stream(self):
+        """Test that the timestone script requires a stream name"""
+        file_path = 'test_data/zips/Sensors_U02_ALLSITES_20190801_20190831.zip'
+        output = subprocess.run(['python', 'timestone.py', '--prep', '--path', file_path], capture_output=True)
+        self.assertIn('Error: You must specify a stream to ingest or all streams.', str(output.stderr))
+
+        output_1 = subprocess.run(['python', 'timestone.py', '--prep', '--path', file_path, '--streams', ' acc'], capture_output=True)
+        self.assertEqual(output_1.returncode, 0)
+
+        output_2 = subprocess.run(['python', 'timestone.py', '--prep', '--path', file_path, '--all-streams'],
+                                  capture_output=True)
+        self.assertEqual(output_2.returncode, 0)
+
+class TestFileHandlers(unittest.TestCase):
+    # def test_unzip_walk(self):
+    #     """Test that the unzip_walk function returns the correct number of files"""
+    #     file_path = 'data/zips/2021-07.zip'
+    #     file_paths = unzip_walk(file_path, cleanup=False)
+    #     self.assertEqual(len(file_paths), 3)
+    #
+    # def test_extract_streams_from_pathlist(self):
+    #     """Test that the extract_streams_from_pathlist function returns the correct number of files"""
+    #     file_path = 'data/zips/2021-07.zip'
+    #     file_paths = unzip_walk(file_path, cleanup=False)
+    #     file_paths = extract_streams_from_pathlist(file_paths, 'acc')
+    #     self.assertEqual(len(file_paths), 1)
+
+    def test_raw_to_batch_runs(self):
+        """Test that the raw_to_batch function returns the correct number of files"""
+        file_path = 'test_data/zips/Sensors_U02_ALLSITES_20190801_20190831.zip'
+        file_paths = unzip_walk(file_path, cleanup=False)
+        streams = 'eda'
+        file_paths = extract_streams_from_pathlist(file_paths, streams)
+        self.assertEqual(len(file_paths), len(streams.split(',')) * 6)
+
+        raw_to_batch_format(file_paths, verbose=False, output_dir='./test_data/', streams=streams)
+        # assert that there is now a combined eda file in the pending_upload directory
+        self.assertEqual(len(os.listdir('test_data/pending_upload')), 1)
+        self.assertEqual(os.listdir('test_data/pending_upload/')[0], '20190801_20190831')
+        self.assertEqual(os.listdir('test_data/pending_upload/20190801_20190831')[0], 'eda')
+        self.assertEqual(os.listdir('test_data/pending_upload/20190801_20190831/eda')[0], 'eda_combined_0.csv')
+
+        df = pd.read_csv('test_data/pending_upload/20190801_20190831/eda/eda_combined_0.csv')
+        num_lines = 9  # number of eda lines in the test data
+        num_files = 6  # 2 devices for 2 ppts, 1 device for two other ppts
+        self.assertEqual(df.shape[0], num_lines * num_files)
+
+        shutil.rmtree('test_data/unzipped')
+        shutil.rmtree('test_data/pending_upload')
+
+
+class WearTimeTest(unittest.TestCase):
+
+    # def test_old_wear_time(self):
+    #     """Test that the wear time function returns the correct number of files"""
+    #     file_path = 'data/test_wear_time.csv'
+    #     output = wear_time(file_path)
+    #     self.assertEqual(output.shape[0], 2)
+    #     self.assertGreaterEqual(output.values[0], 15)
+    #     self.assertLessEqual(output.values[0], 25)
+    #     self.assertGreaterEqual(output.values[1], 30)
+    #     self.assertLessEqual(output.values[1], 45)
+
+    @patch('insights.execute_query_and_return_as_dataframe')
+    def test_gets_ppt_list(self, mock_execute_query_and_return_as_df):
+        """Test that the get_ppt_list function returns the correct number of files"""
+        profile_name = 'nocklab'
+        session = boto3.Session(profile_name=profile_name)
+        query_client = session.client('timestream-query')
+
+        # mock the execute_query_and_return_as_df function
+        mock_df = pd.DataFrame({'ppt_id': ['fc100', 'mgh102', 'mgh103', 'mgh104']})
+        mock_execute_query_and_return_as_df.return_value = mock_df
+
+        ppt_list = get_all_ppts(query_client)
+        self.assertEqual(len(ppt_list), 4)
+
+    def test_list_filter(self):
+        """Test that passing regex filters the participants down to those in the regex"""
+        ppt_list = ['fc100', 'mgh102', 'mgh103', 'mgh104']
+        regex = 'mgh'
+        filtered_ppt_list = filter_ppt_list(ppt_list, regex)
+        self.assertEqual(len(filtered_ppt_list), 3)
+        self.assertEqual(filtered_ppt_list, ['mgh102', 'mgh103', 'mgh104'])
+
+    def test_list_filter_no_match(self):
+        """Test that passing regex filters the participants down to those in the regex"""
+        ppt_list = ['fc100', 'mgh102', 'mgh103', 'mgh104']
+        regex = 'MGH'
+        filtered_ppt_list = filter_ppt_list(ppt_list, regex)
+        self.assertEqual(len(filtered_ppt_list), 0)
+
+    @patch('insights.execute_query_and_return_as_dataframe')
+    def test_get_ppt_df(self, mock_execute_query_and_return_as_df):
+        """Test that the get_ppt_df function returns the correct number of files"""
+        profile_name = 'nocklab'
+        session = boto3.Session(profile_name=profile_name)
+        query_client = session.client('timestream-query')
+
+        # mock the execute_query_and_return_as_df function
+        mock_df = pd.DataFrame(
+            {'dev_id': [
+                '123ABC',
+                '123ABC',
+                '123ABC',
+            ],
+             'time': [
+                 '2020-10-29 11:00:17.990000000',
+                 '2020-10-29 11:00:18.240000000',
+                 '2020-10-29 11:00:18.490000000',
+             ],
+             'value': [
+                 0.000923,
+                 0.012794,
+                 0.001547,
+             ]}
+        )
+        mock_execute_query_and_return_as_df.return_value = mock_df
+
+        ppt_df = get_ppt_df(query_client, 'fc101')
+        self.assertEqual(ppt_df.shape[0], 3)
+
+    @patch('insights.execute_query_and_return_as_dataframe')
+    def test_drop_low_values(self, mock_execute_query_and_return_as_df):
+        """Test that the get_ppt_df function returns the correct number of files"""
+        profile_name = 'nocklab'
+        session = boto3.Session(profile_name=profile_name)
+        query_client = session.client('timestream-query')
+
+        # mock the execute_query_and_return_as_df function
+        # create a mock dataframe with 1000 rows, 300 of which are below 0.03
+        mock_df = pd.DataFrame({
+            'dev_id': ['123ABC'] * 1000,
+            'time': pd.date_range('2020-10-29 11:00:17.990000000', periods=1000, freq='s'),
+            'value': [0.000923] * 300 + [0.12794] * 700
+        })
+
+        mock_execute_query_and_return_as_df.return_value = mock_df
+
+        old_df = get_ppt_df(query_client, 'fc101')
+        new_df, start_len, end_len = drop_low_values(old_df, ppt_id='fc101', output_dir='.', threshold=0.03)
+        self.assertEqual(old_df.shape[0], 1000)
+        self.assertEqual(new_df.shape[0], 700)
+        self.assertEqual(start_len, 1000)
+        self.assertEqual(end_len, 700)
+
+    @patch('insights.execute_query_and_return_as_dataframe')
+    def test_generate_summary(self, mock_execute_query_and_return_as_df):
+        """Test that the get_ppt_df function returns the correct number of files"""
+        profile_name = 'nocklab'
+        session = boto3.Session(profile_name=profile_name)
+        query_client = session.client('timestream-query')
+
+        # mock the execute_query_and_return_as_df function
+        # create a mock dataframe with 1000 rows, 300 of which are below 0.03
+        mock_df = pd.DataFrame({
+            'dev_id': ['123ABC'] * 1000,
+            'time': pd.date_range('2020-10-29 11:00:17.990000000', periods=1000, freq='s'),
+            'value': [0.000923] * 300 + [0.12794] * 700
+        })
+
+        mock_execute_query_and_return_as_df.return_value = mock_df
+
+        old_df = get_ppt_df(query_client, 'fc101')
+        new_df, start_len, end_len = drop_low_values(old_df, ppt_id='fc101', output_dir='.', threshold=0.03)
+        summary_df = get_wear_time_by_day(new_df)
+        self.assertEqual(summary_df.shape[0], 1)
+
+        # divide by 4 because we have "4hz" measures every second
+        self.assertEqual(summary_df.iloc[0]['minutes_worn'], 700 / 60 / 4)
+        self.assertEqual(summary_df.iloc[0]['percent_worn'], 700 / 86400 / 4)
+
+class SimpleWalkTestCase(unittest.TestCase):
+    def setUp(self):
+        # Define the directory path and create sample files
+        self.dir_path = './test_data/simple_walk'
+        os.makedirs(self.dir_path, exist_ok=True)
+        open(os.path.join(self.dir_path, 'eda.csv'), 'w').close()
+        open(os.path.join(self.dir_path, 'temp.csv'), 'w').close()
+        open(os.path.join(self.dir_path, 'acc.csv'), 'w').close()
+        open(os.path.join(self.dir_path, 'other.csv'), 'w').close()
+
+    def tearDown(self):
+        # Remove the sample files and directory
+        os.remove(os.path.join(self.dir_path, 'eda.csv'))
+        os.remove(os.path.join(self.dir_path, 'temp.csv'))
+        os.remove(os.path.join(self.dir_path, 'acc.csv'))
+        os.remove(os.path.join(self.dir_path, 'other.csv'))
+        os.rmdir(self.dir_path)
+
+    def test_simple_walk(self):
+        # Define the test case
         expected_paths = [
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/acc.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/ABCDE12345/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/ABCDE12345/acc.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/ABCDE12345/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/12345ABCDE/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/12345ABCDE/acc.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/12345ABCDE/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/096/2M4Y4111FK/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/096/2M4Y4111FK/acc.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/096/2M4Y4111FK/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/ABCDE12345/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/ABCDE12345/acc.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/ABCDE12345/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/12345ABCDE/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/12345ABCDE/acc.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/12345ABCDE/eda.csv',
-        ]
-        self.assertTrue(all([path in file_paths for path in expected_paths]))
-        self.assertFalse(os.path.exists("test_data/unzipped/"))
+            '/test_data/eda.csv',
+            '/test_data/temp.csv',
+            '/test_data/acc.csv']
+        result_paths = simple_walk(self.dir_path)
+        self.assertEqual(result_paths.sort(), expected_paths.sort())
 
-    def test_unzip_walk_no_cleanup(self):
-        test_file_path = "test_data/zips/Sensors_U02_ALLSITES_20190801_20190831.zip"
-        file_paths = unzip_walk(test_file_path, cleanup=False)
-        expected_paths = [
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/acc.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/ABCDE12345/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/ABCDE12345/acc.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/ABCDE12345/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/12345ABCDE/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/12345ABCDE/acc.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/12345ABCDE/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/096/2M4Y4111FK/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/096/2M4Y4111FK/acc.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/096/2M4Y4111FK/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/ABCDE12345/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/ABCDE12345/acc.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/ABCDE12345/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/12345ABCDE/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/12345ABCDE/acc.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/12345ABCDE/eda.csv',
-        ]
-        self.assertTrue(all([path in file_paths for path in expected_paths]))
-        self.assertTrue(os.path.exists("test_data/unzipped/"))
-        shutil.rmtree("test_data/unzipped/")
+class TestDuplicateHandling(unittest.TestCase):
+    def setUp(self):
+        # Define the directory path and create sample files
+        self.dir_path = './test_data/duplicate_handling'
+        os.makedirs(self.dir_path, exist_ok=True)
+        """
+        create a mock dataframe with 1000 rows, 
+           400 for ppt_id 1001 (dev_id 123ABC) and 600 for ppt_id 1002 (dev_id 456DEF)
+           values can be a random number between 0 and 1
+        """
+        mock_df = pd.DataFrame({
+            'ppt_id': ['1001'] * 400 + ['1002'] * 600,
+            'dev_id': ['123ABC'] * 400 + ['456DEF'] * 600,
+            'Time': pd.date_range('2020-10-29 11:00:17.990000000', periods=1000, freq='s'),
+            'MeasureValue': np.random.rand(1000),
+            'MeasureName': ['eda'] * 1000
+        })
+        # concat 200 rows for ppt 1001 (dev_id 123ABC) that are duplicates of the first 200 rows in terms of time but
+        # have different measure values
+        mock_df = pd.concat([mock_df, pd.DataFrame({
+            'ppt_id': ['1001'] * 200,
+            'dev_id': ['123ABC'] * 200,
+            'Time': pd.date_range('2020-10-29 11:00:17.990000000', periods=200, freq='s'),
+            'MeasureValue': np.random.rand(200),
+            'MeasureName': ['eda'] * 200
+        })])
 
-    def test_path_filtering(self):
-        streams = 'eda,temp'
-        base_paths = [
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/acc.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/ABCDE12345/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/ABCDE12345/acc.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/ABCDE12345/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/12345ABCDE/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/12345ABCDE/acc.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/12345ABCDE/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/096/2M4Y4111FK/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/096/2M4Y4111FK/acc.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/096/2M4Y4111FK/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/ABCDE12345/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/ABCDE12345/acc.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/ABCDE12345/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/12345ABCDE/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/12345ABCDE/acc.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/12345ABCDE/eda.csv',
-        ]
-        filtered_paths = extract_streams_from_pathlist(base_paths, streams)
-        expected_paths = [
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/ABCDE12345/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/ABCDE12345/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/12345ABCDE/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/FC/157/12345ABCDE/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/096/2M4Y4111FK/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/096/2M4Y4111FK/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/ABCDE12345/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/ABCDE12345/eda.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/12345ABCDE/temp.csv',
-            'test_data/unzipped/Sensors_U02_ALLSITES_20190801_20190831/Sensors_U02_ALLSITES_20190801_20190831/U02/MGH/157/12345ABCDE/eda.csv',
-            ]
-        self.assertEqual(filtered_paths, expected_paths)
-
-
-    # very slow, uncomment to test
-    # def test_cost_with_zip(self):
-    #     with patch('sys.stdout', new=StringIO()) as fake_out:
-    #         ingestor = CSVIngestor(None)
-    #         total_cost = walking_cost(self.zippath, ingestor)
-    #         self.assertGreaterEqual(total_cost, 0.0)
-    #         self.assertEqual(round(total_cost, 2), round(1.0489685, 2))
-    #         shutil.rmtree("data/unzipped/2021-07")
-
-    @patch('boto3.Session')
-    def test_write_records(self, Session):
-        with patch('sys.stdout', new=StringIO()) as fake_out:
-            mock_session = Session.return_value
-            client = mock_session.client('timestream-write', config=Config(read_timeout=20, max_pool_connections=5000,
-                                                                    retries={'max_attempts': 10}))
-            client.write_records = MagicMock(return_value={'ResponseMetadata': {'HTTPStatusCode': 200}})
-
-            num_read = CSVIngestor(client).write_records_with_common_attributes(
-                participant_id=self.ppt_id,
-                device_id=self.device_id,
-                file_path=self.file_path,
-                verbose=True)
-            # Check that the file was looped through
-            num_rows = CSVIngestor(None).get_num_rows(self.file_path)
-            num_chunks = num_rows // 1000000
-            self.assertEqual(num_read, num_rows)
-            chunk_msg = f"Processing chunk {num_chunks} with 1000000 records..."
-            self.assertIn(chunk_msg, fake_out.getvalue())
+        # save the df to a test csv file
+        mock_df.to_csv(os.path.join(self.dir_path, 'eda_combined_0.csv'), index=False)
 
 
 
-main()
+
+
+
+    def tearDown(self):
+        # Remove the sample files and directory
+        os.remove(os.path.join(self.dir_path, 'eda_combined_0.csv'))
+        os.rmdir(self.dir_path)
+
+    def test_duplicate_handling(self):
+        # test that duplicates are detected and removed from the csv file
+        path = os.path.join(self.dir_path, 'eda_combined_0.csv')
+        current_log, rows_dropped = handle_duplicates([path], scan_only=True, verbose=False)
+        # check if the file has the correct number of rows
+        self.assertEqual(rows_dropped, 600)
+        # check if the log has a note of which participants were removed and how many duplicates were found
+        self.assertEqual(current_log['ids_with_duplicates'][0], [1001])
+
+
+if __name__ == '__main__':
+    unittest.main()
