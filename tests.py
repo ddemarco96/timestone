@@ -19,9 +19,11 @@ from insights import get_all_ppts, filter_ppt_list, get_ppt_df, drop_low_values,
 
 
 class TestConvertRawToBatch(unittest.TestCase):
+
     def test_call_timestone(self):
         """Test that the timestone script can be called with the --help flag"""
-        subprocess.check_output(['python', 'timestone.py', '-h'], stderr=subprocess.STDOUT, universal_newlines=True)
+        output = subprocess.check_output(['python', 'timestone.py', '-h'], stderr=subprocess.STDOUT, universal_newlines=True)
+        self.assertIn('usage: timestone.py [-h]', output)
 
     def test_needs_path(self):
         """Test that the timestone script requires a path to a directory"""
@@ -34,7 +36,7 @@ class TestConvertRawToBatch(unittest.TestCase):
         output = subprocess.run(['python', 'timestone.py', '--prep', '--path', file_path], capture_output=True)
         self.assertIn('Error: You must specify a stream to ingest or all streams.', str(output.stderr))
 
-        output_1 = subprocess.run(['python', 'timestone.py', '--prep', '--path', file_path, '--streams', ' acc'], capture_output=True)
+        output_1 = subprocess.run(['python', 'timestone.py', '--prep', '--path', file_path, '--streams', 'acc'], capture_output=True)
         self.assertEqual(output_1.returncode, 0)
 
         output_2 = subprocess.run(['python', 'timestone.py', '--prep', '--path', file_path, '--all-streams'],
@@ -62,7 +64,6 @@ class TestFileHandlers(unittest.TestCase):
         streams = 'eda'
         file_paths = extract_streams_from_pathlist(file_paths, streams)
         self.assertEqual(len(file_paths), len(streams.split(',')) * 6)
-
         raw_to_batch_format(file_paths, verbose=False, output_dir='./test_data/', streams=streams)
         # assert that there is now a combined eda file in the pending_upload directory
         self.assertEqual(len(os.listdir('test_data/pending_upload')), 1)
@@ -73,10 +74,11 @@ class TestFileHandlers(unittest.TestCase):
         df = pd.read_csv('test_data/pending_upload/20190801_20190831/eda/eda_combined_0.csv')
         num_lines = 9  # number of eda lines in the test data
         num_files = 6  # 2 devices for 2 ppts, 1 device for two other ppts
-        self.assertEqual(df.shape[0], num_lines * num_files)
+        self.assertEqual(df.shape[0], num_lines * num_files - 4 ) # 4 accidental duplicates in fc96 and mgh96
 
         shutil.rmtree('test_data/unzipped')
         shutil.rmtree('test_data/pending_upload')
+        os.remove('./logs/test_duplicate_log.csv')
 
 
 class WearTimeTest(unittest.TestCase):
@@ -237,43 +239,63 @@ class TestDuplicateHandling(unittest.TestCase):
            400 for ppt_id 1001 (dev_id 123ABC) and 600 for ppt_id 1002 (dev_id 456DEF)
            values can be a random number between 0 and 1
         """
-        mock_df = pd.DataFrame({
-            'ppt_id': ['1001'] * 400 + ['1002'] * 600,
+        self.mock_df = pd.DataFrame({
+            'time': pd.date_range('2020-10-29 11:00:17.990000000', periods=1000, freq='s'),
+            'measure_value': np.random.rand(1000),
+            'measure_name': ['eda'] * 1000,
             'dev_id': ['123ABC'] * 400 + ['456DEF'] * 600,
-            'Time': pd.date_range('2020-10-29 11:00:17.990000000', periods=1000, freq='s'),
-            'MeasureValue': np.random.rand(1000),
-            'MeasureName': ['eda'] * 1000
+            'ppt_id': ['ppt_1001'] * 400 + ['ppt_1002'] * 600,
         })
-        # concat 200 rows for ppt 1001 (dev_id 123ABC) that are duplicates of the first 200 rows in terms of time but
-        # have different measure values
-        mock_df = pd.concat([mock_df, pd.DataFrame({
-            'ppt_id': ['1001'] * 200,
-            'dev_id': ['123ABC'] * 200,
-            'Time': pd.date_range('2020-10-29 11:00:17.990000000', periods=200, freq='s'),
-            'MeasureValue': np.random.rand(200),
-            'MeasureName': ['eda'] * 200
-        })])
         # duplicate (perfectly identical) the last 200 rows of the df
-        mock_df = pd.concat(mock_df, mock_df.loc[-200:])
+        self.mock_df = pd.concat([self.mock_df, self.mock_df.tail(100).copy()], ignore_index=True)
+        # concat 200 rows for ppt 1001 (dev_id 123ABC) that are duplicates of the first 200 rows in terms of time but
+        # have different measure values (dupes_unclear)
+        self.mock_df = pd.concat([self.mock_df, pd.DataFrame({
+            'time': pd.date_range('2020-10-29 11:00:17.990000000', periods=200, freq='s'),
+            'measure_value': np.random.rand(200),
+            'measure_name': ['eda'] * 200,
+            'dev_id': ['123ABC'] * 200,
+            'ppt_id': ['ppt_1001'] * 200,
+        })])
+        self.mock_df = pd.concat([self.mock_df, pd.DataFrame({
+            'time': pd.date_range('2020-10-29 11:00:17.990000000', periods=300, freq='s'),
+            'measure_value': np.NaN,
+            'measure_name': ['eda'] * 300,
+            'dev_id': ['123ABC'] * 300,
+            'ppt_id': ['ppt_1001'] * 300,
+        })])
 
 
         # save the df to a test csv file
-        mock_df.to_csv(os.path.join(self.dir_path, 'eda_combined_0.csv'), index=False)
+        self.mock_df.to_csv(os.path.join(self.dir_path, 'test_eda_combined_0.csv'), index=False)
 
 
     def tearDown(self):
         # Remove the sample files and directory
-        os.remove(os.path.join(self.dir_path, 'eda_combined_0.csv'))
+        os.remove(os.path.join(self.dir_path, 'test_eda_combined_0.csv'))
+        # remove the test_log file if it exists
+        os.remove('./logs/test_duplicate_log.csv')
         os.rmdir(self.dir_path)
 
     def test_duplicate_handling(self):
         # test that duplicates are detected and removed from the csv file
-        path = os.path.join(self.dir_path, 'eda_combined_0.csv')
-        current_log, rows_dropped = handle_duplicates([path], scan_only=True, verbose=False)
-        # check if the file has the correct number of rows
-        self.assertEqual(rows_dropped, 600)
+        path = os.path.join(self.dir_path, 'test_eda_combined_0.csv')
+
+        handle_duplicates(file_paths=[path], scan_only=False, verbose=False)
+        df = pd.read_csv('./logs/test_duplicate_log.csv')
+        current_log = df.loc[df['path'] == path].iloc[0].to_dict()
+        # check if the file has the correct number of rows (base + perf + unclear + nan)
+        # breakpoint()
+        self.assertEqual(current_log['total_rows'], 1000 + 100 + 200 + 300)
+        # check if the file has the correct number of duplicates
+        self.assertEqual(current_log['total_dupes'], 600)
+
+        self.assertEqual(current_log['perfect'], 100)
+        self.assertEqual(current_log['unclear'], 200 + 300) # unclear with values + unclear with nan
+        self.assertEqual(current_log['nan'], 300)
+
         # check if the log has a note of which participants were removed and how many duplicates were found
-        self.assertEqual(current_log['ids_with_duplicates'][0], [1001])
+        self.assertEqual(current_log['dupe_ppts'], ',ppt_1002,ppt_1001')
 
 
 if __name__ == '__main__':

@@ -8,6 +8,9 @@ import shutil
 import re
 import pandas as pd
 import threading
+import math
+import glob
+from tqdm import tqdm
 
 def unzip_walk(file_path, cleanup=True):
     """Unzip a file and return a list of file paths to any eda, temp, or acc csvs files within the unzipped directory.
@@ -106,15 +109,23 @@ def create_output_file(output_path: str, stream: str) -> None:
     with open(output_path, "w", newline="") as csvfile:
         writer = csv.writer(csvfile)
         if stream == "acc":
-            writer.writerow(['Time', 'x', 'y', 'z', 'ppt_id', 'dev_id', 'MeasureName'])
+            writer.writerow(['time', 'x', 'y', 'z', 'dev_id', 'ppt_id'])
         else:
-            writer.writerow(['Time', 'MeasureValue', 'ppt_id', 'dev_id', 'MeasureName'])
+            writer.writerow(['time', 'measure_value', 'dev_id', 'ppt_id'])
 
 # https://boto3.amazonaws.com/v1/documentation/api/latest/guide/s3-uploading-files.html
 
 
 def raw_to_batch_format(file_paths, output_dir='.', verbose=False, streams='eda,temp,acc'):
-    """Processes a list of file paths and formats them for upload to AWS Timestream in batches.
+    if 'test' in file_paths[0]:
+        output_dir = './test_data'
+        os.makedirs(os.path.join(output_dir, 'pending_upload'), exist_ok=True)
+    file_paths = sorted(file_paths)
+    month = combine_files_and_add_columns(file_paths, output_dir, verbose, streams)
+    process_combined_files(month=month, verbose=verbose, output_dir=output_dir)
+
+def combine_files_and_add_columns(file_paths, output_dir='.', verbose=False, streams='eda,temp,acc'):
+    """Processes a list of file paths and formats them for upload to AWS timestream in batches.
 
     Args:
         file_paths (list of str): A list of file paths to process.
@@ -131,38 +142,51 @@ def raw_to_batch_format(file_paths, output_dir='.', verbose=False, streams='eda,
     # example path
     # Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/temp.csv
     start_time = time.time()
+    output_paths = []
+    month = re.findall(r'\d{8}_\d{8}', file_paths[0])[0] if file_paths else None
     for stream_type in streams.split(","):
         output_index = 0
-        for path in file_paths:
+        for path in tqdm(file_paths,
+                         disable=(not verbose),
+                         desc=f"Processing {stream_type} files",
+                         unit="file",
+                         ncols=100,
+                         position=0,
+                         leave=True,
+                         total=len([name for name in file_paths if stream_type in name])
+                         ):
             month = re.findall(r'\d{8}_\d{8}', path)[0]
-            ppt_id, device_id = extract_ids_from_path(path)
+            device_id, ppt_id = extract_ids_from_path(path)
             stream = path.split(os.sep)[-1].split(".")[0]
             if stream != stream_type:
                 continue
 
             chunks_read = 0
             records_read = 0
-            chunksize = 1000000  # 1M rows
+            chunksize = 2000000  # 2M rows
             if "acc.csv" in path:
-                names = ["Time", "x", "y", "z"]
-                dtypes = {"Time": "str", "x": "str", "y": "str", "z": "str"}
+                names = ["time", "x", "y", "z"]
+                dtypes = {"time": "str", "x": "str", "y": "str", "z": "str"}
             else:
-                names = ["Time", "MeasureValue"]
-                dtypes = {"Time": "str", "MeasureValue": "str"}
+                names = ["time", "measure_value"]
+                dtypes = {"time": "str", "measure_value": "str"}
+
+            with open(path, 'rb') as f:
+                number_of_rows = sum(1 for _ in f)
+                chunk_count = math.ceil(number_of_rows / chunksize)
 
             with pd.read_csv(path, header=0, names=names, chunksize=chunksize, dtype=dtypes) as reader:
-
-
-                for chunk in reader:  # each chunk is a df
+                for chunk in tqdm(reader,
+                                  leave=False,
+                                  desc=f"Processing chunks...",
+                                  disable=(not verbose),
+                                  total=chunk_count,
+                                  ):  # each chunk is a df
                     chunks_read += 1
                     records_read += chunk.shape[0]
-                    print(f"Processing chunk {chunks_read} with {chunk.shape[0]} records...") if verbose else None
                     chunk['dev_id'] = device_id
                     chunk['ppt_id'] = ppt_id
-                    chunk['MEASURE_NAME'] = stream
-                    if stream == "eda":
-                        # convert any measures of "-0.0" to "0.0"
-                        chunk['MeasureValue'] = chunk['MeasureValue'].replace("-0.0", "0.0")
+
 
                     # check if an output file exists in the path `pending_upload/[month]/[stream]/combined_[index].csv`
                     output_path = os.path.join(output_dir, "pending_upload", month, stream, f"{stream}_combined_{output_index}.csv")
@@ -172,12 +196,10 @@ def raw_to_batch_format(file_paths, output_dir='.', verbose=False, streams='eda,
                             print(f"Creating new file: {output_path}") if verbose else None
                             create_output_file(output_path, stream)
 
-
-
                     # if it does, check its size
                     output_size = os.path.getsize(output_path) + sys.getsizeof(chunk)
                     # if the size of the file would be > 4.9GB (AWS max is 5GB) after adding the dataframe to it,
-                    if output_size > 4.9 * 10**9:
+                    if output_size > 4.9 * 1e9:
                         # increment index and create a new file
                         output_index += 1
                         output_path = os.path.join(output_dir, "pending_upload", month, stream, f"{stream}_combined_{output_index}.csv")
@@ -187,9 +209,27 @@ def raw_to_batch_format(file_paths, output_dir='.', verbose=False, streams='eda,
                     # append the contents of the dataframe to the output target csv
                     # include the header only if it's a new file
                     chunk.to_csv(output_path, mode="a", header=False, index=False)
+                    output_paths.append(output_path) if output_path not in output_paths else None
     print(f"Processed {records_read} records in {time.time() - start_time} seconds.") if verbose else None
+    return month
 
-def handle_duplicates(file_paths, scan_only=True, verbose=False):
+def process_combined_files(file_paths=None, month=None, verbose=False, final_pass=False, output_dir='.'):
+    if not file_paths and month:
+        dir = "pending_upload" if not final_pass else "cleaned_and_combined"
+        file_paths = glob.glob(os.path.join(output_dir, dir, month, "*", "*.csv"))
+    for name in tqdm(file_paths, desc="Dropping duplicates", disable=not verbose, leave=False, total=len(file_paths), unit="file"):
+        df = pd.read_csv(name)
+        # handle weird -0.0 values in eda
+        if "eda" in name:
+            # convert any measures of "-0.0" to "0.0"
+            df['measure_value'] = df['measure_value'].replace("-0.0", "0.0")
+
+        # handle duplicates
+        handle_duplicates(df=df, scan_only=False, path=name, verbose=verbose)
+
+    # handle duplicates
+
+def handle_duplicates(file_paths=None, df=None, path=None, scan_only=True, verbose=False):
     """Removes and logs participants with duplicate data.
 
     Args:
@@ -198,62 +238,159 @@ def handle_duplicates(file_paths, scan_only=True, verbose=False):
     Returns:
         found_duplicates (df): df with columns "path" and "duplicates" for which participants were removed
     """
-    duplicate_log = []
-    rows_dropped = 0
-    for path in file_paths:
-        df = pd.read_csv(path)
-        if df.duplicated(['Time', 'ppt_id', 'dev_id']).any():
-            # save a list of the participants with duplicates
-            mask = df.duplicated(['Time', 'ppt_id', 'dev_id'])
-            duplicate_ppts = df[mask]['ppt_id'].unique()
-            print(f"Found duplicate data for participant(s): {duplicate_ppts}") if verbose else None
-            # add the duplicates to the log
-            duplicate_log.append({
-                "path": path,
-                "ids_with_duplicates": duplicate_ppts.tolist()
-            })
-            # if we want them gone, remove them
-            if not scan_only:
-                # remove the participants with duplicates
-                df = df.loc[df['ppt_id'].isin(duplicate_ppts) == False]
-                df.to_csv(path, index=False)
-                rows_dropped += df.shape[0]
-            else:
-                # otherwise just say how many we would have dropped
-                rows_dropped += df.loc[df['ppt_id'].isin(duplicate_ppts) == False].shape[0]
+    def drop_from_df(df, scan_only, path=None, verbose=False):
+        """Drops duplicates from a dataframe and logs them to a csv file."""
+        drop_log = {
+            'path': path,
+            'perfect': 0,
+            'nan': 0,
+            'unclear': 0,
+            'total_rows': 0,
+            'total_dupes': 0,
+            'total_ppts': ',',
+            'dupe_ppts': ',',
+        }
+        # if a drop log exists and this isn't a test, use that instead
+        if os.path.exists('./logs/duplicate_log.csv') and path and not 'test' in path:
+            drop_df = pd.read_csv('./logs/duplicate_log.csv')
+            if path in drop_df.path.values:
+                drop_log = drop_df[drop_df.path == path].to_dict('records')[0]
+        output_path = './logs/duplicate_log.csv' if not 'test' in path else './logs/test_duplicate_log.csv'
+        is_acc = 'x' in df.columns  # check if the columns for accelerometer data are present
+        # values of the measure vary by stream
+        total_ppts = df.ppt_id.unique()
+        total_ppts_str = ','.join([ppt for ppt in total_ppts if ppt not in drop_log['total_ppts']])
+        drop_log['total_ppts'] = drop_log['total_ppts'] + total_ppts_str
+
+        total_rows = df.shape[0]
+        drop_log['total_rows'] += total_rows
+        # count the total number of duplicates
+        mask_all = df.duplicated(subset=['time', 'ppt_id', 'dev_id'])
+        drop_log['total_dupes'] += df[mask_all].shape[0]
+        dupe_ppts = df[mask_all].ppt_id.unique()
+
+        if len(dupe_ppts) > 0:
+            try:
+                dupe_ppts_str = ','.join([ppt for ppt in dupe_ppts if ppt not in drop_log['dupe_ppts']])
+                drop_log['dupe_ppts'] = drop_log['dupe_ppts'] + dupe_ppts_str
+            except:
+                breakpoint()
 
 
-    if not scan_only:
-        # check if the file exists yet
-        if not os.path.exists("./logs/duplicate_log.csv"):
-            # create the file and add the header
-            pd.DataFrame(columns=["path", "ids_with_duplicates"]).to_csv("./logs/duplicate_log.csv", index=False)
+        mask_perf = df.duplicated()
+        # count the NaNs
+        drop_log['nan'] += df.x.isna().sum() if is_acc else df.measure_value.isna().sum()
+        # count the perfect duplicates
+        drop_log['perfect'] += mask_perf.sum()
+        # count the unclear values
+        drop_log['unclear'] += df.duplicated(subset=['time', 'ppt_id', 'dev_id']).sum() - mask_perf.sum()
+
+        # otherwise drop the duplicates
+        if not scan_only:
+            # drop the rows with NaNs
+            df.dropna(inplace=True)
+            # drop the perfect duplicates (all columns)
+            df.drop_duplicates(inplace=True)
+            # drop the rows with unclear values
+            df.drop_duplicates(subset=['time', 'ppt_id', 'dev_id'], inplace=True)
+            # check if the file exists yet
+            if not os.path.exists(output_path):
+                # create the file and add the header
+                pd.DataFrame(columns=[
+                    'path',
+                    'perfect',
+                    'nan',
+                    'unclear',
+                    'total_rows',
+                    'total_dupes',
+                    'total_ppts',
+                    'dupe_ppts',
+                ]).to_csv(output_path, index=False)
         # append the current log to the file
-        pd.DataFrame(duplicate_log).to_csv("./logs/duplicate_log.csv", index=False, mode="a", header=False)
-        # make sure we aren't duplicating the logs...(irony)
-        existing_log = pd.read_csv("./logs/duplicate_log.csv")
-        existing_log.drop_duplicates(inplace=True)
-        existing_log.to_csv("./logs/duplicate_log.csv", index=False)
+        pd.DataFrame([drop_log]).to_csv(output_path, index=False, mode="a", header=False)
 
-    current_log = pd.DataFrame(duplicate_log, columns=["path", "ids_with_duplicates"])
-    return current_log, rows_dropped
+    if file_paths:
+        for path in file_paths:
+            df = pd.read_csv(path)
+            drop_from_df(df=df, scan_only=scan_only, path=path, verbose=verbose)
+    elif df is not None:
+        drop_from_df(df=df, scan_only=scan_only, path=path, verbose=verbose)
 
-def smart_drop_dupes(df, verbose=True, path=None, save=True):
-    old_shape = df.shape[0]
-    # get the list of unique times
-    unique_times = df.drop_duplicates('Time', keep=False)['Time']
+    # replace the old file with the new one without the duplicates
+    df.to_csv(path, index=False)
 
-    for t in unique_times:
-        assert df.loc[df['Time'] == t, 'MeasureValue'].unique.shape[0] == 1
+def recombine_cleaned_files(file_paths, max_size=5e9, output_dir='./cleaned_and_combined'):
+    """Combine multiple files with duplicates dropped into the minimum number of files of size <5GB.
+        Parameters:
+        file_paths (list): A list of file paths to be recombined.
+        max_size (float): The maximum size of each combined file. Default is 5e9.
+        Returns:
+        combined_files (list): A list of the combined files.
+        Examples:
+        combined_files = recombine_cleaned_files(['acc_data.csv', 'eda_data.csv', 'temp_data.csv'], max_size=5e9)
+        # combined_files will be a list of two files, each with a size of 5GB or less.
+    """
+    for stream in ['acc', 'eda', 'temp']:
+        try:
+            # Create the output directory if it doesn't exist
+            os.makedirs(os.path.join(output_dir, stream), exist_ok=True)
+            current_file = None
+            combined_file_idx = 0
+            # filter the paths to the relevant stream
+            filtered_paths = sorted([path for path in file_paths if stream in path])
+            # we don't need to combine if there's only one file or none
+            if len(filtered_paths) == 1:
+                destination_path = os.path.join(output_dir, stream, filtered_paths[0].split(os.sep)[-1])
+                shutil.copy(filtered_paths[0], destination_path)
+            elif len(filtered_paths) == 0:
+                continue
 
-    # filter the df down to only the first of the duplicate rows
-    df = df.drop_duplicates('Time', keep=True)
-    new_shape = df.shape[0]
-    num_rows = new_shape - old_shape
-    pct = round(num_rows / old_shape, 2) * 100
-    print(f"Dropping {num_rows} ({pct}%) rows from {path}") if verbose else None
-    if save:
-        df.to_csv(path, index=False)
-    return df
+            # estimated row size in bytes (See CSV ingestor for more details)
+            sizes = {
+                'acc': 47, # time (8) + ppt_id (5) + dev_id (10) + x (8) + y (8) + z (8) = 47
+                'eda': 31, # time (8) + ppt_id (5) + dev_id (10) + measure_value (8) = 31
+                'temp': 31 # time (8) + ppt_id (5) + dev_id (10) + measure_value (8) = 31
+            }
+            row_size = sizes[stream]
+            # Calculating the maximum number of rows that fit within 100MB, so that we can read in chunks of that size
+            rows_per_100MB = 1e8 // row_size
+            num_processed = 0
+            # Process each file in the current data stream
+            while num_processed < len(filtered_paths):
+                if current_file is None:
+                    # Create the first file
+                    current_path = os.path.join(output_dir, stream, f"{stream}_combined_{combined_file_idx}.csv")
+                    current_file = open(current_path, "w")
+                    # Add the header based on the data stream
+                    if "acc" in stream:
+                        current_file.write("time,x,y,z,dev_id,ppt_id\n")
+                    else:
+                        current_file.write("time,measure_value,dev_id,ppt_id\n")
+
+                with pd.read_csv(filtered_paths[num_processed], chunksize=rows_per_100MB) as reader:
+                    for chunk in reader:
+                        # If adding the current chunk exceeds the maximum size, close the current combined file and create a new one
+                        if os.path.getsize(current_path) + chunk.memory_usage(deep=True).sum() > max_size:
+                            # switch to a new file and continue
+                            current_file.close()
+                            combined_file_idx += 1
+                            current_path = os.path.join(output_dir, stream, f"{stream}_combined_{combined_file_idx}.csv")
+                            current_file = open(current_path, "w")
+                            # Add the header based on the data stream
+                            if "acc" in stream:
+                                current_file.write("time,x,y,z,dev_id,ppt_id\n")
+                            else:
+                                current_file.write("time,measure_value,dev_id,ppt_id\n")
+                        # Append the current chunk to the current combined file
+                        chunk.to_csv(current_file, mode="a", index=False, header=False)
+                # we finished processing the csv, so increment the counter to the next path
+                num_processed += 1
+        finally:
+            if current_file is not None:
+                current_file.close()
+
+
+
+
 
 

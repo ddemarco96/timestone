@@ -1,5 +1,6 @@
 data
 pending_upload
+cleaned_and_combined
 .DS_Store
 .idea
 __pycache__

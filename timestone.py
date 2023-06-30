@@ -7,7 +7,7 @@ import pandas as pd
 
 from csv_ingestor import CSVIngestor
 from file_handler import (
-    unzip_walk, extract_streams_from_pathlist, raw_to_batch_format, simple_walk, smart_drop_dupes, handle_duplicates
+    unzip_walk, extract_streams_from_pathlist, raw_to_batch_format, simple_walk, handle_duplicates
 )
 from insights import create_wear_time_summary, get_all_ppts
 from uploader import create_bucket, upload_to_s3
@@ -32,7 +32,6 @@ if __name__ == "__main__":
                         action=argparse.BooleanOptionalAction)
     parser.add_argument('-i', '--insights', action='store_true', help='Calculate insights for the data')
     parser.add_argument('--cleanup', action='store_true', help='Remove the unzipped files after uploading')
-    parser.add_argument('--handle-duplicates', action='store_true', help='Drop participants with duplicate data from prep')
     args = parser.parse_args()
 
 
@@ -76,11 +75,6 @@ if __name__ == "__main__":
         raw_to_batch_format(file_paths, streams=streams, verbose=args.verbose, output_dir=output)
         print("Done prepping files for bulk upload")
 
-    if args.handle_duplicates:
-        for path in file_paths:
-            df = pd.read_csv(path)
-            _ = smart_drop_dupes(df, verbose=True, path=path, save=True)
-
     # if args.insights:
     #     if args.prep:
     #         raise ValueError("You have to prep and get insights in two different calls. "+
@@ -98,12 +92,6 @@ if __name__ == "__main__":
         s3_client = create_bucket(args.bucket_name)
         # upload the files to the bucket
         upload_to_s3(file_paths, args.bucket_name, s3_client)
-
-    if args.handle_duplicates:
-        scan_only = input("Do you want to scan for duplicates or drop them? (s/d) ") != 'd'
-        dupe_log, num_rows = handle_duplicates(file_paths, scan_only=scan_only, verbose=args.verbose)
-        print(f"Found {num_rows} rows of data in {len(dupe_log)} files with duplicate timestamps")
-        breakpoint()
 
 
     if args.insights:
