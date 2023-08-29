@@ -7,7 +7,8 @@ import pandas as pd
 
 from csv_ingestor import CSVIngestor
 from file_handler import (
-    unzip_walk, extract_streams_from_pathlist, raw_to_batch_format, simple_walk, handle_duplicates
+    unzip_walk, extract_streams_from_pathlist, raw_to_batch_format, simple_walk, handle_duplicates,
+    recombine_cleaned_files
 )
 from insights import create_wear_time_summary, get_all_ppts
 from uploader import create_bucket, upload_to_s3

@@ -121,26 +121,28 @@ def raw_to_batch_format(file_paths, output_dir='.', verbose=False, streams='eda,
         output_dir = './test_data'
         os.makedirs(os.path.join(output_dir, 'pending_upload'), exist_ok=True)
     file_paths = sorted(file_paths)
+    # take the files split by device and ppt and combine them into one file per stream adding ppt_id and dev_id
     month = combine_files_and_add_columns(file_paths, output_dir, verbose, streams)
+    # handle duplicates and move to cleaned_and_combined
     process_combined_files(month=month, verbose=verbose, output_dir=output_dir)
 
+    recombine_cleaned_files(file_paths=file_paths, output_dir=os.path.join(output_dir, 'cleaned_and_combined', month))
+
 def combine_files_and_add_columns(file_paths, output_dir='.', verbose=False, streams='eda,temp,acc'):
-    """Processes a list of file paths and formats them for upload to AWS timestream in batches.
-
-    Args:
-        file_paths (list of str): A list of file paths to process.
-        output_dir (str, optional): The directory to output processed files to. Defaults to the current directory.
-        verbose (bool, optional): Whether to print out the status of the processing. Defaults to False.
-        streams (str, optional): A comma-separated list of streams to process. Defaults to "eda,temp,acc".
-
-    Returns:
-        None
-
-    Examples:
-        raw_to_batch_upload(['/path/to/file1.csv', '/path/to/file2.csv'], output_dir='/path/to/output', verbose=True, streams='eda,temp')
+    """Processes files of a given stream type from a list of paths, and writes them to output files in the given output directory.
+        Parameters:
+            •	file_paths (list): List of file paths to process
+            •	streams (str): Comma-separated string of stream types to process
+            •	output_dir (str): Output directory to write files to
+            •	verbose (bool): Whether to print progress messages
+        Returns:
+            •	month (str): Month of the files being processed
+        Examples:
+        month = process_files(file_paths, streams="acc,gyro", output_dir="/data/output/", verbose=True)
     """
     # example path
     # Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/temp.csv
+
     start_time = time.time()
     output_paths = []
     month = re.findall(r'\d{8}_\d{8}', file_paths[0])[0] if file_paths else None
@@ -163,7 +165,8 @@ def combine_files_and_add_columns(file_paths, output_dir='.', verbose=False, str
 
             chunks_read = 0
             records_read = 0
-            chunksize = 2000000  # 2M rows
+            current_size = 0
+            chunksize = 2000000  # 2M rows per chunk
             if "acc.csv" in path:
                 names = ["time", "x", "y", "z"]
                 dtypes = {"time": "str", "x": "str", "y": "str", "z": "str"}
@@ -175,7 +178,7 @@ def combine_files_and_add_columns(file_paths, output_dir='.', verbose=False, str
                 number_of_rows = sum(1 for _ in f)
                 chunk_count = math.ceil(number_of_rows / chunksize)
 
-            with pd.read_csv(path, header=0, names=names, chunksize=chunksize, dtype=dtypes) as reader:
+            with pd.read_csv(path, header=0, names=names, chunksize=chunksize, dtype=dtypes, parse_dates=['time']) as reader:
                 for chunk in tqdm(reader,
                                   leave=False,
                                   desc=f"Processing chunks...",
@@ -195,9 +198,10 @@ def combine_files_and_add_columns(file_paths, output_dir='.', verbose=False, str
                         if not os.path.exists(output_path):
                             print(f"Creating new file: {output_path}") if verbose else None
                             create_output_file(output_path, stream)
+                            current_size = 0
 
                     # if it does, check its size
-                    output_size = os.path.getsize(output_path) + sys.getsizeof(chunk)
+                    output_size = current_size + chunk.memory_usage(deep=True).sum()
                     # if the size of the file would be > 4.9GB (AWS max is 5GB) after adding the dataframe to it,
                     if output_size > 4.9 * 1e9:
                         # increment index and create a new file
@@ -205,10 +209,12 @@ def combine_files_and_add_columns(file_paths, output_dir='.', verbose=False, str
                         output_path = os.path.join(output_dir, "pending_upload", month, stream, f"{stream}_combined_{output_index}.csv")
                         print(f"Creating new file: {output_path}") if verbose else None
                         create_output_file(output_path, stream)
+                        current_size = 0
 
                     # append the contents of the dataframe to the output target csv
                     # include the header only if it's a new file
                     chunk.to_csv(output_path, mode="a", header=False, index=False)
+                    current_size += chunk.memory_usage(deep=True).sum()
                     output_paths.append(output_path) if output_path not in output_paths else None
     print(f"Processed {records_read} records in {time.time() - start_time} seconds.") if verbose else None
     return month
@@ -342,6 +348,7 @@ def recombine_cleaned_files(file_paths, max_size=5e9, output_dir='./cleaned_and_
             if len(filtered_paths) == 1:
                 destination_path = os.path.join(output_dir, stream, filtered_paths[0].split(os.sep)[-1])
                 shutil.copy(filtered_paths[0], destination_path)
+                continue
             elif len(filtered_paths) == 0:
                 continue
 
@@ -353,14 +360,17 @@ def recombine_cleaned_files(file_paths, max_size=5e9, output_dir='./cleaned_and_
             }
             row_size = sizes[stream]
             # Calculating the maximum number of rows that fit within 100MB, so that we can read in chunks of that size
-            rows_per_100MB = 1e8 // row_size
+            # if this is in tests, set smaller sizing for chunks
+            rows_per_100MB = 1e8 // row_size if not "test" in filtered_paths[0] else row_size
             num_processed = 0
+            current_size = 0
             # Process each file in the current data stream
             while num_processed < len(filtered_paths):
                 if current_file is None:
                     # Create the first file
                     current_path = os.path.join(output_dir, stream, f"{stream}_combined_{combined_file_idx}.csv")
                     current_file = open(current_path, "w")
+                    current_size = 0
                     # Add the header based on the data stream
                     if "acc" in stream:
                         current_file.write("time,x,y,z,dev_id,ppt_id\n")
@@ -369,20 +379,28 @@ def recombine_cleaned_files(file_paths, max_size=5e9, output_dir='./cleaned_and_
 
                 with pd.read_csv(filtered_paths[num_processed], chunksize=rows_per_100MB) as reader:
                     for chunk in reader:
+
+                        # print("Processing chunk...with size:", chunk.shape[0])
+                        # print("Current file size:", current_size, " out of ", max_size)
+
+
                         # If adding the current chunk exceeds the maximum size, close the current combined file and create a new one
-                        if os.path.getsize(current_path) + chunk.memory_usage(deep=True).sum() > max_size:
+                        if current_size + chunk.memory_usage(deep=True).sum() > max_size:
                             # switch to a new file and continue
                             current_file.close()
                             combined_file_idx += 1
                             current_path = os.path.join(output_dir, stream, f"{stream}_combined_{combined_file_idx}.csv")
                             current_file = open(current_path, "w")
+                            current_size = 0
                             # Add the header based on the data stream
                             if "acc" in stream:
                                 current_file.write("time,x,y,z,dev_id,ppt_id\n")
                             else:
                                 current_file.write("time,measure_value,dev_id,ppt_id\n")
+                        # print("Writing chunk to file...")
                         # Append the current chunk to the current combined file
                         chunk.to_csv(current_file, mode="a", index=False, header=False)
+                        current_size += chunk.memory_usage(deep=True).sum()
                 # we finished processing the csv, so increment the counter to the next path
                 num_processed += 1
         finally:

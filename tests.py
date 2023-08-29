@@ -13,7 +13,7 @@ import numpy as np
 
 from timestone import (
     unzip_walk, extract_streams_from_pathlist, raw_to_batch_format,
-    create_wear_time_summary, simple_walk, handle_duplicates
+    create_wear_time_summary, simple_walk, handle_duplicates, recombine_cleaned_files
 )
 from insights import get_all_ppts, filter_ppt_list, get_ppt_df, drop_low_values, get_wear_time_by_day
 
@@ -78,6 +78,7 @@ class TestFileHandlers(unittest.TestCase):
 
         shutil.rmtree('test_data/unzipped')
         shutil.rmtree('test_data/pending_upload')
+        shutil.rmtree('test_data/cleaned_and_combined')
         os.remove('./logs/test_duplicate_log.csv')
 
 
@@ -234,6 +235,7 @@ class TestDuplicateHandling(unittest.TestCase):
         # Define the directory path and create sample files
         self.dir_path = './test_data/duplicate_handling'
         os.makedirs(self.dir_path, exist_ok=True)
+        os.makedirs(os.path.join(self.dir_path, 'pending_upload'), exist_ok=True)
         """
         create a mock dataframe with 1000 rows, 
            400 for ppt_id 1001 (dev_id 123ABC) and 600 for ppt_id 1002 (dev_id 456DEF)
@@ -242,7 +244,6 @@ class TestDuplicateHandling(unittest.TestCase):
         self.mock_df = pd.DataFrame({
             'time': pd.date_range('2020-10-29 11:00:17.990000000', periods=1000, freq='s'),
             'measure_value': np.random.rand(1000),
-            'measure_name': ['eda'] * 1000,
             'dev_id': ['123ABC'] * 400 + ['456DEF'] * 600,
             'ppt_id': ['ppt_1001'] * 400 + ['ppt_1002'] * 600,
         })
@@ -253,33 +254,34 @@ class TestDuplicateHandling(unittest.TestCase):
         self.mock_df = pd.concat([self.mock_df, pd.DataFrame({
             'time': pd.date_range('2020-10-29 11:00:17.990000000', periods=200, freq='s'),
             'measure_value': np.random.rand(200),
-            'measure_name': ['eda'] * 200,
             'dev_id': ['123ABC'] * 200,
             'ppt_id': ['ppt_1001'] * 200,
         })])
         self.mock_df = pd.concat([self.mock_df, pd.DataFrame({
             'time': pd.date_range('2020-10-29 11:00:17.990000000', periods=300, freq='s'),
             'measure_value': np.NaN,
-            'measure_name': ['eda'] * 300,
             'dev_id': ['123ABC'] * 300,
             'ppt_id': ['ppt_1001'] * 300,
         })])
 
+        # convert the time column to timestamp format
+        self.mock_df['time'] = pd.to_datetime(self.mock_df['time']).astype('int64') // 10 ** 9
+
 
         # save the df to a test csv file
-        self.mock_df.to_csv(os.path.join(self.dir_path, 'test_eda_combined_0.csv'), index=False)
+        self.df_path = os.path.join(self.dir_path, 'pending_upload', 'test_eda_combined_0.csv')
+        self.mock_df.to_csv(self.df_path, index=False)
 
 
     def tearDown(self):
         # Remove the sample files and directory
-        os.remove(os.path.join(self.dir_path, 'test_eda_combined_0.csv'))
+        # os.remove(os.path.join(self.dir_path, 'test_eda_combined_0.csv'))
         # remove the test_log file if it exists
         os.remove('./logs/test_duplicate_log.csv')
-        os.rmdir(self.dir_path)
-
+        # shutil.rmtree(self.dir_path)
     def test_duplicate_handling(self):
         # test that duplicates are detected and removed from the csv file
-        path = os.path.join(self.dir_path, 'test_eda_combined_0.csv')
+        path = self.df_path
 
         handle_duplicates(file_paths=[path], scan_only=False, verbose=False)
         df = pd.read_csv('./logs/test_duplicate_log.csv')
@@ -297,6 +299,32 @@ class TestDuplicateHandling(unittest.TestCase):
         # check if the log has a note of which participants were removed and how many duplicates were found
         self.assertEqual(current_log['dupe_ppts'], ',ppt_1002,ppt_1001')
 
+    def test_recombination(self):
+        """Assert that after droping duplicates we can recombine the files without losing any additional data"""
+        path = self.df_path
+        handle_duplicates(file_paths=[path], scan_only=False, verbose=False)
+        df_size = self.mock_df.memory_usage(deep=True).sum()
+        max_for_3_files = df_size // 3
+
+        # split the mock df into 2 files to be recombined
+        df = pd.read_csv(path)
+        df1 = df.iloc[:len(df) // 2]
+        df2 = df.iloc[len(df) // 2:]
+        df1_path = os.path.join(self.dir_path, 'pending_upload', 'test_eda_combined_0.csv')
+        df2_path = os.path.join(self.dir_path, 'pending_upload', 'test_eda_combined_1.csv')
+        df1.to_csv(df1_path, index=False)
+        df2.to_csv(df2_path, index=False)
+
+        # recombine the files and assert that the recombined file has the same number of rows as the original
+        recombine_cleaned_files(file_paths=[df1_path, df2_path], max_size=max_for_3_files, output_dir=os.path.join(self.dir_path, 'cleaned_and_combined')) # 100 byte max size should split the file into 3
+        # assert that there are 3 files
+
+        recombined_files = simple_walk(os.path.join(self.dir_path, 'cleaned_and_combined'))
+        recombined_num_rows = 0
+        for p in recombined_files:
+            recombined_num_rows += pd.read_csv(p).shape[0]
+        self.assertEqual(recombined_num_rows, df.shape[0])
+        self.assertEqual(len(simple_walk(os.path.join(self.dir_path, 'cleaned_and_combined'))), 2)
 
 if __name__ == '__main__':
     unittest.main()
