@@ -119,14 +119,16 @@ def create_output_file(output_path: str, stream: str) -> None:
 def raw_to_batch_format(file_paths, output_dir='.', verbose=False, streams='eda,temp,acc'):
     if 'test' in file_paths[0]:
         output_dir = './test_data'
-        os.makedirs(os.path.join(output_dir, 'pending_upload'), exist_ok=True)
+        os.makedirs(os.path.join(output_dir, 'prepped'), exist_ok=True)
     file_paths = sorted(file_paths)
     # take the files split by device and ppt and combine them into one file per stream adding ppt_id and dev_id
     month = combine_files_and_add_columns(file_paths, output_dir, verbose, streams)
     # handle duplicates and move to cleaned_and_combined
     process_combined_files(month=month, verbose=verbose, output_dir=output_dir)
 
-    recombine_cleaned_files(file_paths=file_paths, output_dir=os.path.join(output_dir, 'cleaned_and_combined', month))
+    processed_paths = glob.glob(os.path.join(output_dir, "prepped", month, "*", "*.csv"))
+    # recombine cleaned files to minimize number of files needed to be uploaded
+    recombine_cleaned_files(file_paths=processed_paths, output_dir=os.path.join(output_dir, 'cleaned_and_combined', month))
 
 def combine_files_and_add_columns(file_paths, output_dir='.', verbose=False, streams='eda,temp,acc'):
     """Processes files of a given stream type from a list of paths, and writes them to output files in the given output directory.
@@ -151,7 +153,7 @@ def combine_files_and_add_columns(file_paths, output_dir='.', verbose=False, str
         for path in tqdm(file_paths,
                          disable=(not verbose),
                          desc=f"Processing {stream_type} files",
-                         unit="file",
+                         unit="files",
                          ncols=100,
                          position=0,
                          leave=True,
@@ -166,7 +168,12 @@ def combine_files_and_add_columns(file_paths, output_dir='.', verbose=False, str
             chunks_read = 0
             records_read = 0
             current_size = 0
-            chunksize = 2000000  # 2M rows per chunk
+            optimized_sizes = {
+                "acc": 21474836,
+                "eda": 23860929,
+                "temp": 23860929,
+            }
+            chunksize = optimized_sizes[stream]  # pre-calculate using the get_optimal_chunksize function
             if "acc.csv" in path:
                 names = ["time", "x", "y", "z"]
                 dtypes = {"time": "str", "x": "str", "y": "str", "z": "str"}
@@ -191,12 +198,12 @@ def combine_files_and_add_columns(file_paths, output_dir='.', verbose=False, str
                     chunk['ppt_id'] = ppt_id
 
 
-                    # check if an output file exists in the path `pending_upload/[month]/[stream]/combined_[index].csv`
-                    output_path = os.path.join(output_dir, "pending_upload", month, stream, f"{stream}_combined_{output_index}.csv")
+                    # check if an output file exists in the path `prepped/[month]/[stream]/combined_[index].csv`
+                    output_path = os.path.join(output_dir, "prepped", month, stream, f"{stream}_combined_{output_index}.csv")
                     if not os.path.exists(os.path.dirname(output_path)):
                         os.makedirs(os.path.dirname(output_path))
                         if not os.path.exists(output_path):
-                            print(f"Creating new file: {output_path}") if verbose else None
+                            # print(f"Creating new file: {output_path}") if verbose else None
                             create_output_file(output_path, stream)
                             current_size = 0
 
@@ -206,8 +213,8 @@ def combine_files_and_add_columns(file_paths, output_dir='.', verbose=False, str
                     if output_size > 4.9 * 1e9:
                         # increment index and create a new file
                         output_index += 1
-                        output_path = os.path.join(output_dir, "pending_upload", month, stream, f"{stream}_combined_{output_index}.csv")
-                        print(f"Creating new file: {output_path}") if verbose else None
+                        output_path = os.path.join(output_dir, "prepped", month, stream, f"{stream}_combined_{output_index}.csv")
+                        # print(f"Creating new file: {output_path}") if verbose else None
                         create_output_file(output_path, stream)
                         current_size = 0
 
@@ -221,7 +228,7 @@ def combine_files_and_add_columns(file_paths, output_dir='.', verbose=False, str
 
 def process_combined_files(file_paths=None, month=None, verbose=False, final_pass=False, output_dir='.'):
     if not file_paths and month:
-        dir = "pending_upload" if not final_pass else "cleaned_and_combined"
+        dir = "prepped" if not final_pass else "cleaned_and_combined"
         file_paths = glob.glob(os.path.join(output_dir, dir, month, "*", "*.csv"))
     for name in tqdm(file_paths, desc="Dropping duplicates", disable=not verbose, leave=False, total=len(file_paths), unit="file"):
         df = pd.read_csv(name)
@@ -233,7 +240,6 @@ def process_combined_files(file_paths=None, month=None, verbose=False, final_pas
         # handle duplicates
         handle_duplicates(df=df, scan_only=False, path=name, verbose=verbose)
 
-    # handle duplicates
 
 def handle_duplicates(file_paths=None, df=None, path=None, scan_only=True, verbose=False):
     """Removes and logs participants with duplicate data.
@@ -258,7 +264,7 @@ def handle_duplicates(file_paths=None, df=None, path=None, scan_only=True, verbo
         }
         # if a drop log exists and this isn't a test, use that instead
         if os.path.exists('./logs/duplicate_log.csv') and path and not 'test' in path:
-            drop_df = pd.read_csv('./logs/duplicate_log.csv')
+            drop_df = pd.read_csv('data/saved_for_comp/duplicate_log.csv')
             if path in drop_df.path.values:
                 drop_log = drop_df[drop_df.path == path].to_dict('records')[0]
         output_path = './logs/duplicate_log.csv' if not 'test' in path else './logs/test_duplicate_log.csv'
@@ -410,5 +416,46 @@ def recombine_cleaned_files(file_paths, max_size=5e9, output_dir='./cleaned_and_
 
 
 
+def optimum_chunk_size(stream):
+    """Calculates the optimum chunk size for a given stream.
+        Parameters:
+        stream (str): The stream to calculate the optimum chunk size for.
+        Returns:
+        chunk_size (int): The optimum chunk size for the given stream.
+
+    """
+    # example of each row
+    examples = {
+        'pre_acc': "1557330001111,0.562753,-0.476326,0.610117",
+        'pre_eda': "1557329999142,45.705120",
+        'pre_temp': "1557329998879,23.021000",
+        'post_acc': "1557330001111,0.562753,-0.476326,0.610117,2KNY3111P2,mgh001",
+        'post_eda': "1557329999142,45.70512,2KNY3111P2,mgh001",
+        'post_temp': "1557329998879,23.021,2KNY3111P2,mgh001",
+    }
+    df = pd.read_csv(StringIO(examples[stream]), header=None)
+    mem_usage = df.memory_usage(deep=True).sum() / 1024 ** 2
+    print(f"One row uses {mem_usage} MB")
+    # 16GB of system memory with est 90% reserved for other processes
+    system_memory_total = 16 * 1024
+    memory_allocated = 0.1
+    rows_in_memory = system_memory_total * memory_allocated / mem_usage
+    chunk_size = int(rows_in_memory)
+    return chunk_size
+
+def send_slack_notification(message=None):
+    """
+    Sends a message to a Slack channel
+    Parameters:
+    webhook_url (str): Slack webhook url
+    message (str): Content of the message
+    """
+    webhook_url = os.environ.get('SLACK_WEBHOOK_URL')
+    if message is None:
+        message = "A function has completed running."
+    data = {'text': message}
+    response = requests.post(webhook_url, data=json.dumps(data), headers={'Content-Type': 'application/json'})
+    if response.status_code != 200:
+        raise ValueError(f'Request to slack returned an error {response.status_code}, the response is:\n{response.text}')
 
 

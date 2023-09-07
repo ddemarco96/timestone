@@ -65,19 +65,19 @@ class TestFileHandlers(unittest.TestCase):
         file_paths = extract_streams_from_pathlist(file_paths, streams)
         self.assertEqual(len(file_paths), len(streams.split(',')) * 6)
         raw_to_batch_format(file_paths, verbose=False, output_dir='./test_data/', streams=streams)
-        # assert that there is now a combined eda file in the pending_upload directory
-        self.assertEqual(len(os.listdir('test_data/pending_upload')), 1)
-        self.assertEqual(os.listdir('test_data/pending_upload/')[0], '20190801_20190831')
-        self.assertEqual(os.listdir('test_data/pending_upload/20190801_20190831')[0], 'eda')
-        self.assertEqual(os.listdir('test_data/pending_upload/20190801_20190831/eda')[0], 'eda_combined_0.csv')
+        # assert that there is now a combined eda file in the prepped directory
+        self.assertEqual(len(os.listdir('test_data/prepped')), 1)
+        self.assertEqual(os.listdir('test_data/prepped/')[0], '20190801_20190831')
+        self.assertEqual(os.listdir('test_data/prepped/20190801_20190831')[0], 'eda')
+        self.assertEqual(os.listdir('test_data/prepped/20190801_20190831/eda')[0], 'eda_combined_0.csv')
 
-        df = pd.read_csv('test_data/pending_upload/20190801_20190831/eda/eda_combined_0.csv')
+        df = pd.read_csv('test_data/prepped/20190801_20190831/eda/eda_combined_0.csv')
         num_lines = 9  # number of eda lines in the test data
         num_files = 6  # 2 devices for 2 ppts, 1 device for two other ppts
         self.assertEqual(df.shape[0], num_lines * num_files - 4 ) # 4 accidental duplicates in fc96 and mgh96
 
         shutil.rmtree('test_data/unzipped')
-        shutil.rmtree('test_data/pending_upload')
+        shutil.rmtree('test_data/prepped')
         shutil.rmtree('test_data/cleaned_and_combined')
         os.remove('./logs/test_duplicate_log.csv')
 
@@ -235,7 +235,7 @@ class TestDuplicateHandling(unittest.TestCase):
         # Define the directory path and create sample files
         self.dir_path = './test_data/duplicate_handling'
         os.makedirs(self.dir_path, exist_ok=True)
-        os.makedirs(os.path.join(self.dir_path, 'pending_upload'), exist_ok=True)
+        os.makedirs(os.path.join(self.dir_path, 'prepped'), exist_ok=True)
         """
         create a mock dataframe with 1000 rows, 
            400 for ppt_id 1001 (dev_id 123ABC) and 600 for ppt_id 1002 (dev_id 456DEF)
@@ -269,7 +269,7 @@ class TestDuplicateHandling(unittest.TestCase):
 
 
         # save the df to a test csv file
-        self.df_path = os.path.join(self.dir_path, 'pending_upload', 'test_eda_combined_0.csv')
+        self.df_path = os.path.join(self.dir_path, 'prepped', 'test_eda_combined_0.csv')
         self.mock_df.to_csv(self.df_path, index=False)
 
 
@@ -310,8 +310,8 @@ class TestDuplicateHandling(unittest.TestCase):
         df = pd.read_csv(path)
         df1 = df.iloc[:len(df) // 2]
         df2 = df.iloc[len(df) // 2:]
-        df1_path = os.path.join(self.dir_path, 'pending_upload', 'test_eda_combined_0.csv')
-        df2_path = os.path.join(self.dir_path, 'pending_upload', 'test_eda_combined_1.csv')
+        df1_path = os.path.join(self.dir_path, 'prepped', 'test_eda_combined_0.csv')
+        df2_path = os.path.join(self.dir_path, 'prepped', 'test_eda_combined_1.csv')
         df1.to_csv(df1_path, index=False)
         df2.to_csv(df2_path, index=False)
 

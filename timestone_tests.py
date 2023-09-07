@@ -63,19 +63,19 @@ class TestFileHandlers(unittest.TestCase):
         self.assertEqual(len(file_paths), len(streams.split(',')) * 6)
 
         raw_to_batch_format(file_paths, verbose=False, output_dir='./test_data/', streams=streams)
-        # assert that there is now a combined eda file in the pending_upload directory
-        self.assertEqual(len(os.listdir('test_data/pending_upload')), 1)
-        self.assertEqual(os.listdir('test_data/pending_upload/')[0], '20190801_20190831')
-        self.assertEqual(os.listdir('test_data/pending_upload/20190801_20190831')[0], 'eda')
-        self.assertEqual(os.listdir('test_data/pending_upload/20190801_20190831/eda')[0], 'eda_combined_0.csv')
+        # assert that there is now a combined eda file in the prepped directory
+        self.assertEqual(len(os.listdir('test_data/prepped')), 1)
+        self.assertEqual(os.listdir('test_data/prepped/')[0], '20190801_20190831')
+        self.assertEqual(os.listdir('test_data/prepped/20190801_20190831')[0], 'eda')
+        self.assertEqual(os.listdir('test_data/prepped/20190801_20190831/eda')[0], 'eda_combined_0.csv')
 
-        df = pd.read_csv('test_data/pending_upload/20190801_20190831/eda/eda_combined_0.csv')
+        df = pd.read_csv('test_data/prepped/20190801_20190831/eda/eda_combined_0.csv')
         num_lines = 9  # number of eda lines in the test data
         num_files = 6  # 2 devices for 2 ppts, 1 device for two other ppts
         self.assertEqual(df.shape[0], num_lines * num_files)
 
         shutil.rmtree('test_data/unzipped')
-        shutil.rmtree('test_data/pending_upload')
+        shutil.rmtree('test_data/prepped')
 
 
 class WearTimeTest(unittest.TestCase):
