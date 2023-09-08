@@ -4,6 +4,8 @@ import os
 import shutil
 import zipfile
 import pandas as pd
+from dotenv import load_dotenv
+load_dotenv()
 
 from csv_ingestor import CSVIngestor
 from file_handler import (

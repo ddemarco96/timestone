@@ -11,6 +11,8 @@ import threading
 import math
 import glob
 from tqdm import tqdm
+from dotenv import load_dotenv
+load_dotenv()
 
 def unzip_walk(file_path, cleanup=True):
     """Unzip a file and return a list of file paths to any eda, temp, or acc csvs files within the unzipped directory.
