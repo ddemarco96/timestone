@@ -222,16 +222,24 @@ dependencies:
   - pip:
     - boto3==1.24.28
     - botocore==1.27.59
+    - click==8.1.7
+    - cloudpickle==2.2.1
     - cryptography==38.0.4
+    - dask==2023.9.1
+    - fsspec==2023.9.0
     - ipython==8.9.0
     - jmespath==0.10.0
+    - locket==1.0.0
     - packaging==22.0
     - pandas==1.5.2
+    - partd==1.4.0
     - pip==22.3.1
     - pyopenssl==22.0.0
     - pyqt5-sip==12.11.0
     - python-dotenv==1.0.0
     - pytz==2022.7
+    - pyyaml==6.0.1
+    - toolz==0.12.0
     - tqdm==4.65.0
     - wheel==0.37.1
 prefix: /Users/dylandemarco/opt/miniconda3/envs/timestream

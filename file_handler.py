@@ -62,6 +62,7 @@ def simple_walk(dir_path):
         for file in files:
             if file.endswith(".csv") and ("eda" in file or "temp" in file or "acc" in file):
                 file_paths.append(os.path.join(root, file))
+
     return file_paths
 
 def extract_ids_from_path(file_path):
