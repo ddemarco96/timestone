@@ -1,6 +1,6 @@
 data
-prepped
-cleaned_and_combined
+Stage2-deduped_eda_cleaned
+Stage3-combined_and_ready_for_upload
 .DS_Store
 .idea
 __pycache__

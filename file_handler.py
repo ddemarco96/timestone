@@ -1,18 +1,21 @@
 """A set of utilities for handling zipped files and directories"""
 import csv
 import os
-import sys
-import time
 import zipfile
 import shutil
 import re
 import pandas as pd
-import threading
-import math
 import glob
 from tqdm import tqdm
 from dotenv import load_dotenv
+import dask.dataframe as dd
+from dask.diagnostics import ProgressBar
+import requests
+import json
+import logging
 load_dotenv()
+
+log = logging.getLogger(__name__)
 
 def unzip_walk(file_path, cleanup=True):
     """Unzip a file and return a list of file paths to any eda, temp, or acc csvs files within the unzipped directory.
@@ -30,8 +33,7 @@ def unzip_walk(file_path, cleanup=True):
     # 1. Find the parent dir of the file_path
     grandparent_dir = os.path.dirname(os.path.dirname(file_path))
     unzipped_dir = os.path.join(grandparent_dir, "unzipped")
-    if not os.path.exists(unzipped_dir):
-        os.mkdir(unzipped_dir)
+    os.makedirs(unzipped_dir, exist_ok=True)
     # 2/3. Unzip the file and move all to unzipped_dir
     with zipfile.ZipFile(file_path, 'r') as zip_ref:
         zip_name = zip_ref.filename.split(os.sep)[-1][0:-4]
@@ -120,129 +122,75 @@ def create_output_file(output_path: str, stream: str) -> None:
 
 
 def raw_to_batch_format(file_paths, output_dir='.', verbose=False, streams='eda,temp,acc'):
+    """
+    Stage 1 - raw/unzipped files
+    Stage 2 - original structure but deduplicated and -0 values replaced with 0
+    Stage 3 - combined files with ppt_id and dev_id columns
+    """
+    is_test = False # use different directories and block slack notifications
     if 'test' in file_paths[0]:
         output_dir = './test_data'
-        os.makedirs(os.path.join(output_dir, 'prepped'), exist_ok=True)
+        is_test = True
     file_paths = sorted(file_paths)
-    # take the files split by device and ppt and combine them into one file per stream adding ppt_id and dev_id
-    month = combine_files_and_add_columns(file_paths, output_dir, verbose, streams)
-    # handle duplicates and move to cleaned_and_combined
-    process_combined_files(month=month, verbose=verbose, output_dir=output_dir)
-
-    processed_paths = glob.glob(os.path.join(output_dir, "prepped", month, "*", "*.csv"))
-    # recombine cleaned files to minimize number of files needed to be uploaded
-    recombine_cleaned_files(file_paths=processed_paths, output_dir=os.path.join(output_dir, 'cleaned_and_combined', month))
-
-def combine_files_and_add_columns(file_paths, output_dir='.', verbose=False, streams='eda,temp,acc'):
-    """Processes files of a given stream type from a list of paths, and writes them to output files in the given output directory.
-        Parameters:
-            •	file_paths (list): List of file paths to process
-            •	streams (str): Comma-separated string of stream types to process
-            •	output_dir (str): Output directory to write files to
-            •	verbose (bool): Whether to print progress messages
-        Returns:
-            •	month (str): Month of the files being processed
-        Examples:
-        month = process_files(file_paths, streams="acc,gyro", output_dir="/data/output/", verbose=True)
-    """
-    # example path
-    # Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/temp.csv
-
-    start_time = time.time()
-    output_paths = []
-    month = re.findall(r'\d{8}_\d{8}', file_paths[0])[0] if file_paths else None
-    for stream_type in streams.split(","):
-        output_index = 0
-        for path in tqdm(file_paths,
-                         disable=(not verbose),
-                         desc=f"Processing {stream_type} files",
-                         unit="files",
-                         ncols=100,
-                         position=0,
-                         leave=True,
-                         total=len([name for name in file_paths if stream_type in name])
-                         ):
-            month = re.findall(r'\d{8}_\d{8}', path)[0]
-            device_id, ppt_id = extract_ids_from_path(path)
-            stream = path.split(os.sep)[-1].split(".")[0]
-            if stream != stream_type:
-                continue
-
-            chunks_read = 0
-            records_read = 0
-            current_size = 0
-            optimized_sizes = {
-                "acc": 21474836,
-                "eda": 23860929,
-                "temp": 23860929,
-            }
-            chunksize = optimized_sizes[stream]  # pre-calculate using the get_optimal_chunksize function
-            if "acc.csv" in path:
-                names = ["time", "x", "y", "z"]
-                dtypes = {"time": "str", "x": "str", "y": "str", "z": "str"}
-            else:
-                names = ["time", "measure_value"]
-                dtypes = {"time": "str", "measure_value": "str"}
-
-            with open(path, 'rb') as f:
-                number_of_rows = sum(1 for _ in f)
-                chunk_count = math.ceil(number_of_rows / chunksize)
-
-            with pd.read_csv(path, header=0, names=names, chunksize=chunksize, dtype=dtypes, parse_dates=['time']) as reader:
-                for chunk in tqdm(reader,
-                                  leave=False,
-                                  desc=f"Processing chunks...",
-                                  disable=(not verbose),
-                                  total=chunk_count,
-                                  ):  # each chunk is a df
-                    chunks_read += 1
-                    records_read += chunk.shape[0]
-                    chunk['dev_id'] = device_id
-                    chunk['ppt_id'] = ppt_id
+    # extract the month from the first file path
+    month = re.findall(r'\d{8}_\d{8}', file_paths[0])[0]
+    # create the stage directories is they don't exist
+    stage_2_path = os.path.join(output_dir, 'Stage2-deduped_eda_cleaned')
+    stage_3_path = os.path.join(output_dir, 'Stage3-combined_and_ready_for_upload')
+    os.makedirs(stage_2_path, exist_ok=True)
+    os.makedirs(stage_3_path, exist_ok=True)
 
 
-                    # check if an output file exists in the path `prepped/[month]/[stream]/combined_[index].csv`
-                    output_path = os.path.join(output_dir, "prepped", month, stream, f"{stream}_combined_{output_index}.csv")
-                    if not os.path.exists(os.path.dirname(output_path)):
-                        os.makedirs(os.path.dirname(output_path))
-                        if not os.path.exists(output_path):
-                            # print(f"Creating new file: {output_path}") if verbose else None
-                            create_output_file(output_path, stream)
-                            current_size = 0
 
-                    # if it does, check its size
-                    output_size = current_size + chunk.memory_usage(deep=True).sum()
-                    # if the size of the file would be > 4.9GB (AWS max is 5GB) after adding the dataframe to it,
-                    if output_size > 4.9 * 1e9:
-                        # increment index and create a new file
-                        output_index += 1
-                        output_path = os.path.join(output_dir, "prepped", month, stream, f"{stream}_combined_{output_index}.csv")
-                        # print(f"Creating new file: {output_path}") if verbose else None
-                        create_output_file(output_path, stream)
-                        current_size = 0
+    # copy the unzipped dir to Stage2 where they will be deduplicated and cleaned
+    copy_files_to_stage2(file_paths, output_dir=stage_2_path, verbose=verbose)
 
-                    # append the contents of the dataframe to the output target csv
-                    # include the header only if it's a new file
-                    chunk.to_csv(output_path, mode="a", header=False, index=False)
-                    current_size += chunk.memory_usage(deep=True).sum()
-                    output_paths.append(output_path) if output_path not in output_paths else None
-    print(f"Processed {records_read} records in {time.time() - start_time} seconds.") if verbose else None
-    return month
+    # get the paths to the copied files
+    file_paths = glob.glob(os.path.join(output_dir, "Stage2-deduped_eda_cleaned", month, "*", "*", '*', '*', "*.csv"))
+    # deduplicate all and clean the EDA files (in place in Stage2)
+    deduplicate_and_clean(month=month, verbose=verbose, output_dir=output_dir)
 
-def process_combined_files(file_paths=None, month=None, verbose=False, final_pass=False, output_dir='.'):
+    # take the files that are split by device and ppt and combine them into one file per stream adding ppt_id and dev_id
+    # save the output to Stage3 for upload
+    combine_files_and_add_columns(month=month, output_dir=output_dir, verbose=verbose, streams=streams)
+    send_slack_notification("Columns added, duplicates dropped", test=is_test)
+
+def copy_files_to_stage2(file_paths, output_dir='.', verbose=False):
+    for path in tqdm(
+            file_paths,
+            desc="Copying files to Stage2",
+            disable=not verbose,
+            leave=True,
+            total=len(file_paths),
+            unit="file"):
+
+
+        # remove everything except the month from the top level
+        pattern = r'unzipped/Sensors_[Uu]\d{2}_ALLSITES_'
+        dest = re.sub(pattern, 'Stage2-deduped_eda_cleaned/', path)
+        # create the directories but make sure not to include the filename itself as a dir
+        os.makedirs(os.sep.join(dest.split(os.sep)[:-1]), exist_ok=True)
+        shutil.copy(path, dest)
+
+def deduplicate_and_clean(file_paths=None, month=None, verbose=False, output_dir='.'):
     if not file_paths and month:
-        dir = "prepped" if not final_pass else "cleaned_and_combined"
+        dir = "Stage2-deduped_eda_cleaned"
         file_paths = glob.glob(os.path.join(output_dir, dir, month, "*", "*.csv"))
-    for name in tqdm(file_paths, desc="Dropping duplicates", disable=not verbose, leave=False, total=len(file_paths), unit="file"):
-        df = pd.read_csv(name)
+    for path in tqdm(file_paths, desc="Dropping duplicates", disable=not verbose, leave=True, total=len(file_paths),
+                     unit="file"):
+
+        if "acc.csv" in path:
+            names = ["time", "x", "y", "z"]
+        else:
+            names = ["time", "measure_value"]
+        df = pd.read_csv(path, names=names, header=0, dtype=str)
         # handle weird -0.0 values in eda
-        if "eda" in name:
+        if "eda" in path:
             # convert any measures of "-0.0" to "0.0"
             df['measure_value'] = df['measure_value'].replace("-0.0", "0.0")
 
         # handle duplicates
-        handle_duplicates(df=df, scan_only=False, path=name, verbose=verbose)
-
+        handle_duplicates(df=df, scan_only=False, path=path, verbose=verbose)
 
 def handle_duplicates(file_paths=None, df=None, path=None, scan_only=True, verbose=False):
     """Removes and logs participants with duplicate data.
@@ -267,10 +215,10 @@ def handle_duplicates(file_paths=None, df=None, path=None, scan_only=True, verbo
         }
         # if a drop log exists and this isn't a test, use that instead
         if os.path.exists('./logs/duplicate_log.csv') and path and not 'test' in path:
-            drop_df = pd.read_csv('data/saved_for_comp/duplicate_log.csv')
+            drop_df = pd.read_csv('./logs/duplicate_log.csv')
             if path in drop_df.path.values:
                 drop_log = drop_df[drop_df.path == path].to_dict('records')[0]
-        output_path = './logs/duplicate_log.csv' if not 'test' in path else './logs/test_duplicate_log.csv'
+        log_output_path = './logs/duplicate_log.csv' if not 'test' in path else './test_data/duplicate_handling/logs/test_duplicate_log.csv'
         is_acc = 'x' in df.columns  # check if the columns for accelerometer data are present
         # values of the measure vary by stream
         total_ppts = df.ppt_id.unique()
@@ -309,7 +257,7 @@ def handle_duplicates(file_paths=None, df=None, path=None, scan_only=True, verbo
             # drop the rows with unclear values
             df.drop_duplicates(subset=['time', 'ppt_id', 'dev_id'], inplace=True)
             # check if the file exists yet
-            if not os.path.exists(output_path):
+            if not os.path.exists(log_output_path):
                 # create the file and add the header
                 pd.DataFrame(columns=[
                     'path',
@@ -320,133 +268,85 @@ def handle_duplicates(file_paths=None, df=None, path=None, scan_only=True, verbo
                     'total_dupes',
                     'total_ppts',
                     'dupe_ppts',
-                ]).to_csv(output_path, index=False)
+                ]).to_csv(log_output_path, index=False)
         # append the current log to the file
-        pd.DataFrame([drop_log]).to_csv(output_path, index=False, mode="a", header=False)
+        pd.DataFrame([drop_log]).to_csv(log_output_path, index=False, mode="a", header=False)
 
     if file_paths:
         for path in file_paths:
             df = pd.read_csv(path)
             drop_from_df(df=df, scan_only=scan_only, path=path, verbose=verbose)
+            # replace the old file with the new one without the duplicates
+            df.to_csv(path, index=False)
     elif df is not None:
         drop_from_df(df=df, scan_only=scan_only, path=path, verbose=verbose)
+        df.to_csv(path, index=False)
 
-    # replace the old file with the new one without the duplicates
-    df.to_csv(path, index=False)
-
-def recombine_cleaned_files(file_paths, max_size=5e9, output_dir='./cleaned_and_combined'):
-    """Combine multiple files with duplicates dropped into the minimum number of files of size <5GB.
+def combine_files_and_add_columns(file_paths=None, month=None, output_dir='.', verbose=False, streams='eda,temp,acc'):
+    """Processes files of a given stream type from a list of paths, and writes them to output files in the given output directory.
         Parameters:
-        file_paths (list): A list of file paths to be recombined.
-        max_size (float): The maximum size of each combined file. Default is 5e9.
+            •	file_paths (list): List of file paths to process
+            •	streams (str): Comma-separated string of stream types to process
+            •	output_dir (str): Output directory to write files to
+            •	verbose (bool): Whether to print progress messages
         Returns:
-        combined_files (list): A list of the combined files.
+            •	month (str): Month of the files being processed
         Examples:
-        combined_files = recombine_cleaned_files(['acc_data.csv', 'eda_data.csv', 'temp_data.csv'], max_size=5e9)
-        # combined_files will be a list of two files, each with a size of 5GB or less.
+        month = process_files(file_paths, streams="acc,gyro", output_dir="/data/output/", verbose=True)
     """
-    for stream in ['acc', 'eda', 'temp']:
-        try:
-            # Create the output directory if it doesn't exist
-            os.makedirs(os.path.join(output_dir, stream), exist_ok=True)
-            current_file = None
-            combined_file_idx = 0
-            # filter the paths to the relevant stream
-            filtered_paths = sorted([path for path in file_paths if stream in path])
-            # we don't need to combine if there's only one file or none
-            if len(filtered_paths) == 1:
-                destination_path = os.path.join(output_dir, stream, filtered_paths[0].split(os.sep)[-1])
-                shutil.copy(filtered_paths[0], destination_path)
-                continue
-            elif len(filtered_paths) == 0:
-                continue
+    # example path
+    # Sensors_U02_ALLSITES_20190801_20190831/U02/FC/096/2M4Y4111FK/temp.csv
+    # you can optionally extract the month name from the supplied filepaths but by default just use the month arg
 
-            # estimated row size in bytes (See CSV ingestor for more details)
-            sizes = {
-                'acc': 47, # time (8) + ppt_id (5) + dev_id (10) + x (8) + y (8) + z (8) = 47
-                'eda': 31, # time (8) + ppt_id (5) + dev_id (10) + measure_value (8) = 31
-                'temp': 31 # time (8) + ppt_id (5) + dev_id (10) + measure_value (8) = 31
-            }
-            row_size = sizes[stream]
-            # Calculating the maximum number of rows that fit within 100MB, so that we can read in chunks of that size
-            # if this is in tests, set smaller sizing for chunks
-            rows_per_100MB = 1e8 // row_size if not "test" in filtered_paths[0] else row_size
-            num_processed = 0
-            current_size = 0
-            # Process each file in the current data stream
-            while num_processed < len(filtered_paths):
-                if current_file is None:
-                    # Create the first file
-                    current_path = os.path.join(output_dir, stream, f"{stream}_combined_{combined_file_idx}.csv")
-                    current_file = open(current_path, "w")
-                    current_size = 0
-                    # Add the header based on the data stream
-                    if "acc" in stream:
-                        current_file.write("time,x,y,z,dev_id,ppt_id\n")
-                    else:
-                        current_file.write("time,measure_value,dev_id,ppt_id\n")
+    month = re.findall(r'\d{8}_\d{8}', file_paths[0])[0] if file_paths else month
+    if not file_paths:
+        file_paths = glob.glob(os.path.join(output_dir, "Stage2-deduped_eda_cleaned", month, "*", "*", '*', '*', "*.csv"))
 
-                with pd.read_csv(filtered_paths[num_processed], chunksize=rows_per_100MB) as reader:
-                    for chunk in reader:
+    for stream in tqdm(streams.split(","),
+                            disable=(not verbose),
+                            desc="Processing streams",
+                            unit="streams",
+                            ncols=100,
+                            position=0,
+                            leave=True,
+                            total=len(streams.split(","))
+                            ):
 
-                        # print("Processing chunk...with size:", chunk.shape[0])
-                        # print("Current file size:", current_size, " out of ", max_size)
+        stream_paths = [path for path in file_paths if stream in path.split(os.sep)[-1]]
+        if len(stream_paths) == 0:
+            continue
+            # Initialize an empty Dask DataFrame
+        ddf = dd.from_pandas(pd.DataFrame([], dtype="object"), npartitions=1)
+        for path in stream_paths:
+            device_id, ppt_id = extract_ids_from_path(path)
+            stream_in_name = path.split(os.sep)[-1].split(".")[0]
+            assert stream == stream_in_name
 
+            # Read the file into a Dask DataFrame
+            chunk_ddf = dd.read_csv(path, assume_missing=False, dtype=str)
 
-                        # If adding the current chunk exceeds the maximum size, close the current combined file and create a new one
-                        if current_size + chunk.memory_usage(deep=True).sum() > max_size:
-                            # switch to a new file and continue
-                            current_file.close()
-                            combined_file_idx += 1
-                            current_path = os.path.join(output_dir, stream, f"{stream}_combined_{combined_file_idx}.csv")
-                            current_file = open(current_path, "w")
-                            current_size = 0
-                            # Add the header based on the data stream
-                            if "acc" in stream:
-                                current_file.write("time,x,y,z,dev_id,ppt_id\n")
-                            else:
-                                current_file.write("time,measure_value,dev_id,ppt_id\n")
-                        # print("Writing chunk to file...")
-                        # Append the current chunk to the current combined file
-                        chunk.to_csv(current_file, mode="a", index=False, header=False)
-                        current_size += chunk.memory_usage(deep=True).sum()
-                # we finished processing the csv, so increment the counter to the next path
-                num_processed += 1
-        finally:
-            if current_file is not None:
-                current_file.close()
+            # Add the ppt_id and dev_id columns
+            chunk_ddf = chunk_ddf.assign(ppt_id=ppt_id)
+            chunk_ddf = chunk_ddf.assign(dev_id=device_id)
+            # Append the chunk DataFrame to the main DataFrame
+            ddf = dd.concat([ddf, chunk_ddf], interleave_partitions=True)
+
+        stream_dir = os.path.join(output_dir, "Stage3-combined_and_ready_for_upload", month, stream)
+        os.makedirs(stream_dir, exist_ok=True)
+        output_path = os.path.join(stream_dir, f"{stream}_combined_*.csv")
+        if "test" in output_path:
+            # Write the Dask DataFrame to a CSV file without the progress bar
+            ddf.repartition(partition_size="900MB").to_csv(output_path, index=False)
+        else:
+            with ProgressBar():
+                # Write the Dask DataFrame to a CSV file
+                ddf.repartition(partition_size="900MB").to_csv(output_path, index=False)
 
 
 
 
-def optimum_chunk_size(stream):
-    """Calculates the optimum chunk size for a given stream.
-        Parameters:
-        stream (str): The stream to calculate the optimum chunk size for.
-        Returns:
-        chunk_size (int): The optimum chunk size for the given stream.
 
-    """
-    # example of each row
-    examples = {
-        'pre_acc': "1557330001111,0.562753,-0.476326,0.610117",
-        'pre_eda': "1557329999142,45.705120",
-        'pre_temp': "1557329998879,23.021000",
-        'post_acc': "1557330001111,0.562753,-0.476326,0.610117,2KNY3111P2,mgh001",
-        'post_eda': "1557329999142,45.70512,2KNY3111P2,mgh001",
-        'post_temp': "1557329998879,23.021,2KNY3111P2,mgh001",
-    }
-    df = pd.read_csv(StringIO(examples[stream]), header=None)
-    mem_usage = df.memory_usage(deep=True).sum() / 1024 ** 2
-    print(f"One row uses {mem_usage} MB")
-    # 16GB of system memory with est 90% reserved for other processes
-    system_memory_total = 16 * 1024
-    memory_allocated = 0.1
-    rows_in_memory = system_memory_total * memory_allocated / mem_usage
-    chunk_size = int(rows_in_memory)
-    return chunk_size
-
-def send_slack_notification(message=None):
+def send_slack_notification(message=None, test=False):
     """
     Sends a message to a Slack channel
     Parameters:
@@ -457,8 +357,10 @@ def send_slack_notification(message=None):
     if message is None:
         message = "A function has completed running."
     data = {'text': message}
-    response = requests.post(webhook_url, data=json.dumps(data), headers={'Content-Type': 'application/json'})
-    if response.status_code != 200:
-        raise ValueError(f'Request to slack returned an error {response.status_code}, the response is:\n{response.text}')
+    log.info(f"{message}")
+    if not test:
+        response = requests.post(webhook_url, data=json.dumps(data), headers={'Content-Type': 'application/json'})
+        if response.status_code != 200:
+            raise ValueError(f'Request to slack returned an error {response.status_code}, the response is:\n{response.text}')
 
 

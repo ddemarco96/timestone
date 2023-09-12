@@ -10,7 +10,7 @@ load_dotenv()
 from csv_ingestor import CSVIngestor
 from file_handler import (
     unzip_walk, extract_streams_from_pathlist, raw_to_batch_format, simple_walk, handle_duplicates,
-    recombine_cleaned_files
+    send_slack_notification, combine_files_and_add_columns, copy_files_to_stage2
 )
 from insights import create_wear_time_summary, get_all_ppts
 from uploader import create_bucket, upload_to_s3
@@ -76,12 +76,11 @@ if __name__ == "__main__":
         # prep the files for bulk upload
         output = args.output if args.output else '.'
         raw_to_batch_format(file_paths, streams=streams, verbose=args.verbose, output_dir=output)
-        print("Done prepping files for bulk upload")
 
     # if args.insights:
     #     if args.prep:
     #         raise ValueError("You have to prep and get insights in two different calls. "+
-    #                          "Don't forget to switch the path to the prepped files")
+    #                          "Don't forget to switch the path to the Stage2-deduped_eda_cleaned files")
     #     file_paths = extract_streams_from_pathlist(file_paths, 'eda')
     #     for path in file_paths:
     #         print(path)
