@@ -146,9 +146,10 @@ def raw_to_batch_format(file_paths, output_dir='.', verbose=False, streams='eda,
     copy_files_to_stage2(file_paths, output_dir=stage_2_path, verbose=verbose)
 
     # get the paths to the copied files
-    file_paths = glob.glob(os.path.join(output_dir, "Stage2-deduped_eda_cleaned", month, "*", "*", '*', '*', "*.csv"))
+    file_paths = sorted(glob.glob(os.path.join(output_dir, "Stage2-deduped_eda_cleaned", month, "*", "*", '*', '*', "*.csv")))
+
     # deduplicate all and clean the EDA files (in place in Stage2)
-    deduplicate_and_clean(month=month, verbose=verbose, output_dir=output_dir)
+    deduplicate_and_clean(file_paths=file_paths, verbose=verbose, output_dir=output_dir)
 
     # take the files that are split by device and ppt and combine them into one file per stream adding ppt_id and dev_id
     # save the output to Stage3 for upload
@@ -166,16 +167,16 @@ def copy_files_to_stage2(file_paths, output_dir='.', verbose=False):
 
 
         # remove everything except the month from the top level
-        pattern = r'unzipped/Sensors_[Uu]\d{2}_ALLSITES_'
+        pattern = r'unzipped/Sensors_[Uu]\d{2}_ALLSITES_|unzipped/Sensors_[Uu]\d{2}_MGH_'
         dest = re.sub(pattern, 'Stage2-deduped_eda_cleaned/', path)
         # create the directories but make sure not to include the filename itself as a dir
         os.makedirs(os.sep.join(dest.split(os.sep)[:-1]), exist_ok=True)
         shutil.copy(path, dest)
 
 def deduplicate_and_clean(file_paths=None, month=None, verbose=False, output_dir='.'):
-    if not file_paths and month:
-        dir = "Stage2-deduped_eda_cleaned"
-        file_paths = glob.glob(os.path.join(output_dir, dir, month, "*", "*.csv"))
+    # if not file_paths and month:
+    #     dir = "Stage2-deduped_eda_cleaned"
+    #     file_paths = glob.glob(os.path.join(output_dir, dir, month, "*", "*.csv"))
     for path in tqdm(file_paths, desc="Dropping duplicates", disable=not verbose, leave=True, total=len(file_paths),
                      unit="file"):
 
@@ -185,7 +186,7 @@ def deduplicate_and_clean(file_paths=None, month=None, verbose=False, output_dir
             names = ["time", "measure_value"]
         df = pd.read_csv(path, names=names, header=0, dtype=str)
         # handle weird -0.0 values in eda
-        if "eda" in path:
+        if "eda" in path.split(os.sep)[-1]:
             # convert any measures of "-0.0" to "0.0"
             df['measure_value'] = df['measure_value'].replace("-0.0", "0.0")
 
@@ -203,83 +204,108 @@ def handle_duplicates(file_paths=None, df=None, path=None, scan_only=True, verbo
     """
     def drop_from_df(df, scan_only, path=None, verbose=False):
         """Drops duplicates from a dataframe and logs them to a csv file."""
+        # get the participant and device ids from the path
+        dev_id, ppt_id  = extract_ids_from_path(path)
+        # get the month from the path
+        month = re.findall(r'\d{8}_\d{8}', path)[0]
+        stream = path.split(os.sep)[-1].split(".")[0]
+
         drop_log = {
-            'path': path,
+            'ppt_id': ppt_id,
+            'dev_id': dev_id,
+            'month': month,
+            'stream': stream,
             'perfect': 0,
             'nan': 0,
             'unclear': 0,
             'total_rows': 0,
             'total_dupes': 0,
-            'total_ppts': ',',
-            'dupe_ppts': ',',
         }
-        # if a drop log exists and this isn't a test, use that instead
-        if os.path.exists('./logs/duplicate_log.csv') and path and not 'test' in path:
-            drop_df = pd.read_csv('./logs/duplicate_log.csv')
-            if path in drop_df.path.values:
-                drop_log = drop_df[drop_df.path == path].to_dict('records')[0]
-        log_output_path = './logs/duplicate_log.csv' if not 'test' in path else './test_data/duplicate_handling/logs/test_duplicate_log.csv'
-        is_acc = 'x' in df.columns  # check if the columns for accelerometer data are present
+
+        # create the log file if it doesn't exist
+
+        log_path = './logs/duplicate_log.csv' if not 'test' in path else './test_data/duplicate_handling/logs/test_duplicate_log.csv'
+        if not os.path.exists(log_path):
+            os.makedirs(os.sep.join(log_path.split(os.sep)[:-1]), exist_ok=True) # don't turn the filename into a dir
+            drop_df = pd.DataFrame(columns=drop_log.keys())
+        else:
+            drop_df = pd.read_csv(log_path)
+            log_index = (drop_df.ppt_id == ppt_id) & \
+                        (drop_df.dev_id == dev_id) & \
+                        (drop_df.month == month) & \
+                        (drop_df.stream == stream)
+            # grab the row for this participant&dev&month&stream if it exists
+            if len(drop_df[log_index]) > 0:
+                drop_log = drop_df[
+                    log_index
+                    ].to_dict('records')[0]
+
+
         # values of the measure vary by stream
-        total_ppts = df.ppt_id.unique()
-        total_ppts_str = ','.join([ppt for ppt in total_ppts if ppt not in drop_log['total_ppts']])
-        drop_log['total_ppts'] = drop_log['total_ppts'] + total_ppts_str
+        drop_log['ppt_id'] = ppt_id
+        drop_log['dev_id'] = dev_id
+        drop_log['month'] = month
 
+        is_acc = 'x' in df.columns  # check if the columns for accelerometer data are present
         total_rows = df.shape[0]
-        drop_log['total_rows'] += total_rows
+        drop_log['total_rows'] = total_rows
         # count the total number of duplicates
-        mask_all = df.duplicated(subset=['time', 'ppt_id', 'dev_id'])
-        drop_log['total_dupes'] += df[mask_all].shape[0]
-        dupe_ppts = df[mask_all].ppt_id.unique()
+        mask_all = df.duplicated(subset=['time'])
+        drop_log['total_dupes'] = df[mask_all].shape[0]
 
-        if len(dupe_ppts) > 0:
-            try:
-                dupe_ppts_str = ','.join([ppt for ppt in dupe_ppts if ppt not in drop_log['dupe_ppts']])
-                drop_log['dupe_ppts'] = drop_log['dupe_ppts'] + dupe_ppts_str
-            except:
-                breakpoint()
-
-
-        mask_perf = df.duplicated()
         # count the NaNs
-        drop_log['nan'] += df.x.isna().sum() if is_acc else df.measure_value.isna().sum()
-        # count the perfect duplicates
-        drop_log['perfect'] += mask_perf.sum()
-        # count the unclear values
-        drop_log['unclear'] += df.duplicated(subset=['time', 'ppt_id', 'dev_id']).sum() - mask_perf.sum()
+        drop_log['nan'] = df.x.isna().sum() if is_acc else df.measure_value.isna().sum()
+
+        # count the perfect duplicates -- entire row is duplicated
+        mask_perf = df.duplicated()
+        drop_log['perfect'] = df[mask_perf].shape[0]
+
+        # count the unclear values -- time is duplicated but other values are different
+        mask_unclear = mask_all & ~mask_perf
+        drop_log['unclear'] = df[mask_unclear].shape[0]
 
         # otherwise drop the duplicates
         if not scan_only:
+            # drop the rows with unclear values
+            df.loc[:] = df[~mask_unclear]
             # drop the rows with NaNs
             df.dropna(inplace=True)
             # drop the perfect duplicates (all columns)
-            df.drop_duplicates(inplace=True)
-            # drop the rows with unclear values
-            df.drop_duplicates(subset=['time', 'ppt_id', 'dev_id'], inplace=True)
-            # check if the file exists yet
-            if not os.path.exists(log_output_path):
-                # create the file and add the header
-                pd.DataFrame(columns=[
-                    'path',
-                    'perfect',
-                    'nan',
-                    'unclear',
-                    'total_rows',
-                    'total_dupes',
-                    'total_ppts',
-                    'dupe_ppts',
-                ]).to_csv(log_output_path, index=False)
+            df.drop_duplicates(inplace=True, keep='last') # based on recommendation by Giulia via email
+
+
         # append the current log to the file
-        pd.DataFrame([drop_log]).to_csv(log_output_path, index=False, mode="a", header=False)
+        # currently this allows rescans of the same file to be added to the log multiple times
+        # ...not sure if that's a problem, but you could grab by the latest index if needed
+        # pd.DataFrame([drop_log]).to_csv(log_path, index=False, mode="a", header=False)
+        # pd.DataFrame([drop_log]).to_csv(log_path, index=False, mode="a", header=False)
+        log_index = (drop_df.ppt_id == ppt_id) & \
+                    (drop_df.dev_id == dev_id) & \
+                    (drop_df.month == month) & \
+                    (drop_df.stream == stream)
+
+        if drop_df[log_index].shape[0] > 0:
+            # update row if it exists
+            # print(f"Updating log for {ppt_id} {dev_id} {month} {stream}")
+            # print(drop_log)
+            # print(drop_df[log_index].columns)
+            for k, v in drop_log.items():
+                drop_df.loc[log_index, k] = v
+        else:
+            # append 'drop_log' as a new analysis round
+            drop_df = pd.concat([drop_df, pd.DataFrame([drop_log])], ignore_index=True)
+
+        drop_df.to_csv(log_path, index=False)
+        return df
 
     if file_paths:
         for path in file_paths:
             df = pd.read_csv(path)
-            drop_from_df(df=df, scan_only=scan_only, path=path, verbose=verbose)
+            df = drop_from_df(df=df, scan_only=scan_only, path=path, verbose=verbose)
             # replace the old file with the new one without the duplicates
             df.to_csv(path, index=False)
     elif df is not None:
-        drop_from_df(df=df, scan_only=scan_only, path=path, verbose=verbose)
+        df = drop_from_df(df=df, scan_only=scan_only, path=path, verbose=verbose)
         df.to_csv(path, index=False)
 
 def combine_files_and_add_columns(file_paths=None, month=None, output_dir='.', verbose=False, streams='eda,temp,acc'):
@@ -334,13 +360,16 @@ def combine_files_and_add_columns(file_paths=None, month=None, output_dir='.', v
         stream_dir = os.path.join(output_dir, "Stage3-combined_and_ready_for_upload", month, stream)
         os.makedirs(stream_dir, exist_ok=True)
         output_path = os.path.join(stream_dir, f"{stream}_combined_*.csv")
+        df_size_bytes = dd.compute(ddf.memory_usage(index=True, deep=True).sum())[0]
+        n_partitions = max(df_size_bytes // (1024 ** 3), 1)
+
         if "test" in output_path:
             # Write the Dask DataFrame to a CSV file without the progress bar
-            ddf.repartition(partition_size="900MB").to_csv(output_path, index=False)
+            ddf.repartition(npartitions=n_partitions).to_csv(output_path, index=False)
         else:
             with ProgressBar():
                 # Write the Dask DataFrame to a CSV file
-                ddf.repartition(partition_size="900MB").to_csv(output_path, index=False)
+                ddf.repartition(npartitions=n_partitions).to_csv(output_path, index=False)
 
 
 
@@ -362,5 +391,114 @@ def send_slack_notification(message=None, test=False):
         response = requests.post(webhook_url, data=json.dumps(data), headers={'Content-Type': 'application/json'})
         if response.status_code != 200:
             raise ValueError(f'Request to slack returned an error {response.status_code}, the response is:\n{response.text}')
+
+
+def repartition_data(month_path):
+    """
+    Use this function to repartition the data in Stage3 if the files are too small for some reason
+    """
+    streams = ['eda', 'acc', 'temp']
+    for stream in streams:
+        # Define subpath
+        subpath = os.path.join(month_path, stream, "*.csv")
+        # Create a Dask DataFrame
+        ddf = dd.read_csv(subpath)
+        with ProgressBar():
+            # Compute dataframe size
+            df_size_bytes = dd.compute(ddf.memory_usage(index=True, deep=True).sum())[0]
+            # Determine number of partitions such that each partition is ~1GB
+            n_partitions = max(df_size_bytes // (1024 ** 3), 1)
+            output = os.path.join(month_path, f"repartition_{stream}", f"{stream}_combined_*.csv")
+            # Repartition dataframe
+            ddf.repartition(npartitions=n_partitions).to_csv(output, index=False)
+
+
+def smell_test(month):
+    """Grab a row from the log and check that it's been handled correctly
+
+    Check the log file for a row that contains all three types of duplicates (perfect, nan, and unclear) and grab
+    the first row that meets this criterion. If no such row is found, grab the first row that contains two types of
+    duplicates. The function then checks the original, Stage2, and Stage3 files for the given row to make sure that
+    the number of rows match up and that the perfect, nan, and unclear duplicates have been dropped.
+    Parameters:
+    month (str): The month for which to check the log row.
+    Returns:
+    None
+    Examples:
+    smell_test('2021-09') # Check the log row for the month of 2021-09.
+    """
+    log_path = './logs/duplicate_log.csv'
+    log_df = pd.read_csv(log_path)
+    log_df = log_df.loc[log_df.month == month]
+    ## grab a row with all three types of duplicates if possible, preferably not acc
+    log_df = log_df.sort_values(by="stream", ascending=False) # sort by stream so that acc is last
+    # grab the first row that has all three types of duplicates
+    all_types = log_df.loc[(log_df.perfect > 0) & (log_df.nan > 0) & (log_df.unclear > 0)]
+    if all_types.shape[0] == 0:
+        print("No rows with all three types of duplicates found. Grabbing a row with two types of duplicates.")
+        two_types = all_types.loc[(all_types.unclear > 0) & (all_types.nan > 0)]
+        if two_types.shape[0] == 0:
+            print("No rows with unclear and nan's found. Do a visual smell test as well.")
+            row = log_df.loc[(log_df.unclear > 0) | (log_df.perfect > 0) | (log_df.nan > 0)].iloc[0]
+        else:
+            row = two_types.iloc[0]
+    else:
+        row = all_types.iloc[0]
+    ppt_id = row.ppt_id
+    dev_id = row.dev_id
+    stream = row.stream
+    print(f"Checking {ppt_id} {dev_id} {stream} in {month}")
+    og_path = glob.glob(f"./data/unzipped/*_{month}/*/*/{ppt_id[-3:]}/{dev_id}/{stream}.csv")[0]
+    df_original = pd.read_csv(og_path, dtype=str)
+
+    stage2_paths = glob.glob(f"./data/Stage2-deduped_eda_cleaned/{month}/*/*/{ppt_id[-3:]}/{dev_id}/{stream}.csv")
+    df_stage2 = pd.concat([pd.read_csv(path, dtype=str) for path in stage2_paths])
+
+    # have to find the stage3 path by looking for the ppt_id in the file
+    stage3_paths = glob.glob(f"./data/Stage3-combined_and_ready_for_upload/{month}/{stream}/{stream}_combined_*.csv")
+    stage3_paths_with_ppt = []
+    for path in stage3_paths:
+        # we need to make sure we get all rows for the ppt_id
+        with open(path, 'r') as file:
+            content = file.read()
+        if ppt_id in content:
+            stage3_paths_with_ppt.append(path)
+    df_stage3 = pd.concat([pd.read_csv(path, dtype=str) for path in stage3_paths_with_ppt])
+    df_stage3 = df_stage3.loc[(df_stage3.ppt_id == ppt_id) & (df_stage3.dev_id == dev_id)]
+
+    # check that the number of rows in Stage2 and Stage3 are the same
+    assert df_stage2.shape[0] == df_stage3.shape[0], f"Stage2 ({df_stage2.shape[0]}) and Stage3 ({df_stage3.shape[0]}) have different numbers of rows"
+    # check that the number of rows in Stage3 + the total dupes + nans in the log = total rows in the log
+    assert df_stage3.shape[0] + row.total_dupes + row.nan == row.total_rows, "Stage3 rows + total dupes + nans != total rows"
+    # check that the total rows in the log and the total rows in the original are the same
+    assert df_original.shape[0] == row.total_rows, "Original rows != total rows"
+
+    # use column index in calls rather than typing out the different names with spaces pre-cleaning
+    # idx 0 = time, idx 1 is measure value
+    time_col = df_original.columns[0]
+    measure_col = df_original.columns[1]
+    # check that an example of perfect, nan, and unclear is not in Stage2
+    perfect_rows = df_original.loc[df_original.duplicated()]
+    nan_rows =  df_original.loc[df_original[measure_col].isna()]
+    unclear_rows = df_original.loc[df_original.duplicated(time_col) & ~df_original.duplicated()]
+
+    perfect = perfect_rows.iloc[0] if perfect_rows.shape[0] > 0 else None
+    nan = nan_rows.iloc[0] if nan_rows.shape[0] > 0 else None
+    unclear = unclear_rows.iloc[0] if unclear_rows.shape[0] > 0 else None
+    if perfect is not None:
+        # assert only one row with the perfect time in Stage2 and Stage3
+        assert df_stage2.loc[df_stage2.time == perfect[time_col]].shape[0] == 1
+        assert df_stage3.loc[df_stage3.time == perfect[time_col]].shape[0] == 1
+    if nan is not None:
+        # assert nan row has been dropped
+        assert df_stage2.loc[df_stage2.time == nan[time_col]].shape[0] == 0
+        assert df_stage3.loc[df_stage3.time == nan[time_col]].shape[0] == 0
+    if unclear is not None:
+        # assert unclear row has been dropped
+        assert df_stage2.loc[df_stage2.time == unclear[time_col]].shape[0] == 0
+        assert df_stage3.loc[df_stage3.time == unclear[time_col]].shape[0] == 0
+    print("Smell test passed!")
+
+
 
 

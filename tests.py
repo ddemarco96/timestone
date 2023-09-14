@@ -76,7 +76,7 @@ class TestFileHandlers(unittest.TestCase):
         df = pd.read_csv('test_data/Stage3-combined_and_ready_for_upload/20190801_20190831/eda/eda_combined_0.csv')
         num_lines = 9  # number of eda lines in the test data
         num_files = 6  # 2 devices for 2 ppts, 1 device for two other ppts
-        self.assertEqual(df.shape[0], num_lines * num_files)
+        self.assertEqual(df.shape[0], num_lines * num_files - 4) # 4 dupe "unclear" lines removed
 
         shutil.rmtree('test_data/unzipped')
         shutil.rmtree('test_data/Stage2-deduped_eda_cleaned')
@@ -319,7 +319,7 @@ class TestDuplicateHandling(unittest.TestCase):
         handle_duplicates(file_paths=self.df_paths, scan_only=False, verbose=False)
 
         df = pd.read_csv('./test_data/duplicate_handling/logs/test_duplicate_log.csv')
-        current_log = df.sum().to_dict()
+        current_log = df.loc[df['ppt_id'].isin(["fc101", "fc102"])].sum().to_dict()
         # check if the file has the correct number of rows (base + perf + unclear + nan)
         self.assertEqual(current_log['total_rows'], 1000 + 100 + 200 + 300)
         # check if the file has the correct number of duplicates
@@ -330,7 +330,7 @@ class TestDuplicateHandling(unittest.TestCase):
         self.assertEqual(current_log['nan'], 300)
 
         # check if the log has a note of which participants were removed and how many duplicates were found
-        self.assertEqual(current_log['dupe_ppts'], ',ppt_102,ppt_101')
+        self.assertEqual(df.loc[df['ppt_id'].isin(["fc101", "fc102"])].shape[0], 2)
 
     def test_recombination(self):
         """Assert that after droping duplicates we can recombine the files without losing any additional data"""
