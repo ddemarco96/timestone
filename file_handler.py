@@ -250,14 +250,14 @@ def handle_duplicates(file_paths=None, df=None, path=None, scan_only=True, verbo
         total_rows = df.shape[0]
         drop_log['total_rows'] = total_rows
         # count the total number of duplicates
-        mask_all = df.duplicated(subset=['time'])
+        mask_all = df.duplicated(subset=['time'], keep=False)
         drop_log['total_dupes'] = df[mask_all].shape[0]
 
         # count the NaNs
         drop_log['nan'] = df.x.isna().sum() if is_acc else df.measure_value.isna().sum()
 
         # count the perfect duplicates -- entire row is duplicated
-        mask_perf = df.duplicated()
+        mask_perf = df.duplicated(keep=False)
         drop_log['perfect'] = df[mask_perf].shape[0]
 
         # count the unclear values -- time is duplicated but other values are different
@@ -267,18 +267,16 @@ def handle_duplicates(file_paths=None, df=None, path=None, scan_only=True, verbo
         # otherwise drop the duplicates
         if not scan_only:
             # drop the rows with unclear values
-            df.loc[:] = df[~mask_unclear]
-            # drop the rows with NaNs
-            df.dropna(inplace=True)
-            # drop the perfect duplicates (all columns)
-            df.drop_duplicates(inplace=True, keep='last') # based on recommendation by Giulia via email
+            df = df[~mask_unclear]
 
+            # drop the rows with NaNs
+            df = df.dropna()
+            # drop the perfect duplicates (all columns)
+            df = df.drop_duplicates(keep='last') # based on recommendation by Giulia via email
 
         # append the current log to the file
         # currently this allows rescans of the same file to be added to the log multiple times
         # ...not sure if that's a problem, but you could grab by the latest index if needed
-        # pd.DataFrame([drop_log]).to_csv(log_path, index=False, mode="a", header=False)
-        # pd.DataFrame([drop_log]).to_csv(log_path, index=False, mode="a", header=False)
         log_index = (drop_df.ppt_id == ppt_id) & \
                     (drop_df.dev_id == dev_id) & \
                     (drop_df.month == month) & \
@@ -286,9 +284,6 @@ def handle_duplicates(file_paths=None, df=None, path=None, scan_only=True, verbo
 
         if drop_df[log_index].shape[0] > 0:
             # update row if it exists
-            # print(f"Updating log for {ppt_id} {dev_id} {month} {stream}")
-            # print(drop_log)
-            # print(drop_df[log_index].columns)
             for k, v in drop_log.items():
                 drop_df.loc[log_index, k] = v
         else:
@@ -413,7 +408,7 @@ def repartition_data(month_path):
             ddf.repartition(npartitions=n_partitions).to_csv(output, index=False)
 
 
-def smell_test(month):
+def smell_test(month, ppt_id=None, dev_id=None, stream=None):
     """Grab a row from the log and check that it's been handled correctly
 
     Check the log file for a row that contains all three types of duplicates (perfect, nan, and unclear) and grab
@@ -444,9 +439,21 @@ def smell_test(month):
             row = two_types.iloc[0]
     else:
         row = all_types.iloc[0]
-    ppt_id = row.ppt_id
-    dev_id = row.dev_id
-    stream = row.stream
+    ppt_id = row.ppt_id if ppt_id is None else ppt_id
+    dev_id = row.dev_id if dev_id is None else dev_id
+    stream = row.stream if stream is None else stream
+    row = log_df.loc[(log_df.ppt_id == ppt_id) & (log_df.dev_id == dev_id) & (log_df.stream == stream)].iloc[0]
+
+    # exit the test if there were no duplicates to begin with
+    if row.total_dupes == 0:
+        print("No duplicates to test. Exiting.")
+        return
+
+    # some files are too big to read into memory so we have to handle these separately
+    if row.total_rows > 75000000 and row.total_dupes > 0:
+        print(f"File for {month, stream, ppt_id, dev_id} too large to read into memory. Skipping smell test.")
+        return
+
     print(f"Checking {ppt_id} {dev_id} {stream} in {month}")
     og_path = glob.glob(f"./data/unzipped/*_{month}/*/*/{ppt_id[-3:]}/{dev_id}/{stream}.csv")[0]
     df_original = pd.read_csv(og_path, dtype=str)
@@ -457,7 +464,7 @@ def smell_test(month):
     # have to find the stage3 path by looking for the ppt_id in the file
     stage3_paths = glob.glob(f"./data/Stage3-combined_and_ready_for_upload/{month}/{stream}/{stream}_combined_*.csv")
     stage3_paths_with_ppt = []
-    for path in stage3_paths:
+    for path in tqdm(stage3_paths, desc="Reading paths looking for ppt", leave=False, unit="file", position=0, total=len(stage3_paths), ncols=100):
         # we need to make sure we get all rows for the ppt_id
         with open(path, 'r') as file:
             content = file.read()
@@ -466,10 +473,9 @@ def smell_test(month):
     df_stage3 = pd.concat([pd.read_csv(path, dtype=str) for path in stage3_paths_with_ppt])
     df_stage3 = df_stage3.loc[(df_stage3.ppt_id == ppt_id) & (df_stage3.dev_id == dev_id)]
 
+
     # check that the number of rows in Stage2 and Stage3 are the same
     assert df_stage2.shape[0] == df_stage3.shape[0], f"Stage2 ({df_stage2.shape[0]}) and Stage3 ({df_stage3.shape[0]}) have different numbers of rows"
-    # check that the number of rows in Stage3 + the total dupes + nans in the log = total rows in the log
-    assert df_stage3.shape[0] + row.total_dupes + row.nan == row.total_rows, "Stage3 rows + total dupes + nans != total rows"
     # check that the total rows in the log and the total rows in the original are the same
     assert df_original.shape[0] == row.total_rows, "Original rows != total rows"
 
@@ -477,26 +483,35 @@ def smell_test(month):
     # idx 0 = time, idx 1 is measure value
     time_col = df_original.columns[0]
     measure_col = df_original.columns[1]
+    perf_mask = df_original.duplicated(keep=False)
     # check that an example of perfect, nan, and unclear is not in Stage2
-    perfect_rows = df_original.loc[df_original.duplicated()]
-    nan_rows =  df_original.loc[df_original[measure_col].isna()]
-    unclear_rows = df_original.loc[df_original.duplicated(time_col) & ~df_original.duplicated()]
-
+    perfect_rows = df_original.loc[perf_mask]
     perfect = perfect_rows.iloc[0] if perfect_rows.shape[0] > 0 else None
-    nan = nan_rows.iloc[0] if nan_rows.shape[0] > 0 else None
-    unclear = unclear_rows.iloc[0] if unclear_rows.shape[0] > 0 else None
     if perfect is not None:
         # assert only one row with the perfect time in Stage2 and Stage3
         assert df_stage2.loc[df_stage2.time == perfect[time_col]].shape[0] == 1
         assert df_stage3.loc[df_stage3.time == perfect[time_col]].shape[0] == 1
-    if nan is not None:
+        assert df_stage2.duplicated(keep=False).sum() == 0
+        assert df_stage3.duplicated(keep=False).sum() == 0
+    del perfect_rows
+    del perfect
+
+    had_na = df_original.isna().sum().sum() > 0
+    if had_na:
         # assert nan row has been dropped
-        assert df_stage2.loc[df_stage2.time == nan[time_col]].shape[0] == 0
-        assert df_stage3.loc[df_stage3.time == nan[time_col]].shape[0] == 0
+        assert df_stage2.isna().sum().sum() == 0
+        assert df_stage3.isna().sum().sum() == 0
+
+    unclear_rows = df_original.loc[df_original.duplicated(time_col, keep=False) & ~perf_mask]
+    unclear = unclear_rows.iloc[0] if unclear_rows.shape[0] > 0 else None
     if unclear is not None:
         # assert unclear row has been dropped
         assert df_stage2.loc[df_stage2.time == unclear[time_col]].shape[0] == 0
         assert df_stage3.loc[df_stage3.time == unclear[time_col]].shape[0] == 0
+        assert df_stage2.duplicated(['time'], keep=False).sum() == 0
+        assert df_stage3.duplicated(['time', 'dev_id'], keep=False).sum() == 0
+    del unclear_rows
+    del unclear
     print("Smell test passed!")
 
 

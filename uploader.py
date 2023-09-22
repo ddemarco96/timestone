@@ -15,6 +15,11 @@ def create_bucket(bucket_name, profile_name=None):
     print("Bucket Created")
     return s3_client
 
+def get_client(profile_name=None):
+    profile_name = profile_name if profile_name else 'nocklab'
+    session = boto3.Session(profile_name=profile_name)
+    return session.client('s3')
+
 def upload_to_s3(file_paths, bucket_name, s3_client):
     for path in file_paths:
         object_name = os.path.basename(path)

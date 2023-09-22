@@ -60,6 +60,7 @@ class TestFileHandlers(unittest.TestCase):
 
     def test_raw_to_batch_runs(self):
         """Test that the raw_to_batch function returns the correct number of files"""
+        # there are 4 unclear duplicates in EACH of fc096 and mgh096
         file_path = 'test_data/zips/Sensors_U02_ALLSITES_20190801_20190831.zip'
         file_paths = unzip_walk(file_path, cleanup=False)
         streams = 'eda'
@@ -76,7 +77,7 @@ class TestFileHandlers(unittest.TestCase):
         df = pd.read_csv('test_data/Stage3-combined_and_ready_for_upload/20190801_20190831/eda/eda_combined_0.csv')
         num_lines = 9  # number of eda lines in the test data
         num_files = 6  # 2 devices for 2 ppts, 1 device for two other ppts
-        self.assertEqual(df.shape[0], num_lines * num_files - 4) # 4 dupe "unclear" lines removed
+        self.assertEqual(df.shape[0], num_lines * num_files - 8) # 8 dupe "unclear" lines removed
 
         shutil.rmtree('test_data/unzipped')
         shutil.rmtree('test_data/Stage2-deduped_eda_cleaned')
@@ -269,26 +270,39 @@ class TestDuplicateHandling(unittest.TestCase):
             'dev_id': ['456DEF'] * 600,
             'ppt_id': ['ppt_102'] * 600,
         })
+        self.num_dupes_perfect = 100
+        self.num_dupes_unclear = 200
+        self.num_dupes_nan = 150 # technically also unclear
+        self.num_perfect = self.num_dupes_perfect * 2
+        self.num_unclear = self.num_dupes_unclear * 2
+        self.num_nan = self.num_dupes_nan + 150 # 150 unclear, 150 new time nan
 
-        # duplicate (perfectly identical) the last 100 rows of the df (200 perf)
-        self.mock_df_102 = pd.concat([self.mock_df_102, self.mock_df_102.tail(100).copy()], ignore_index=True)
+        # duplicate (perfectly identical) the last 100 rows of the df (200 perf) (100 retained after drop)
+        self.mock_df_102 = pd.concat([self.mock_df_102, self.mock_df_102.tail(self.num_dupes_perfect).copy()], ignore_index=True)
 
         # concat 200 rows for ppt 101 (dev_id 123ABC) that are duplicates of the first 200 rows in terms of time but
         # have different measure values (dupes_unclear)
         self.mock_df_101 = pd.concat([self.mock_df_101, pd.DataFrame({
-            'time': pd.date_range('2020-10-29 11:00:17.990000000', periods=200, freq='s'),
-            'measure_value': np.random.rand(200),
-            'dev_id': ['123ABC'] * 200,
-            'ppt_id': ['ppt_101'] * 200,
+            'time': pd.date_range('2020-10-29 11:00:17.990000000', periods=self.num_dupes_unclear, freq='s'),
+            'measure_value': np.random.rand(self.num_dupes_unclear),
+            'dev_id': ['123ABC'] * self.num_dupes_unclear,
+            'ppt_id': ['ppt_101'] * self.num_dupes_unclear,
         })])
 
-        # concat 300 rows for ppt 101 (dev_id 123ABC) that are duplicates of the first 300 rows in terms of time but nan
-        # for measure value (dupes_nan)
+        # concat 150 rows for ppt 101 (dev_id 123ABC) that are duplicates of the first 150 rows in terms of time but nan
+        # for measure value (dupes_nan) technically also dupes unclear
         self.mock_df_101 = pd.concat([self.mock_df_101, pd.DataFrame({
-            'time': pd.date_range('2020-10-29 11:00:17.990000000', periods=300, freq='s'),
+            'time': pd.date_range('2020-10-29 11:00:17.990000000', periods=self.num_dupes_nan, freq='s'),
             'measure_value': np.NaN,
-            'dev_id': ['123ABC'] * 300,
-            'ppt_id': ['ppt_101'] * 300,
+            'dev_id': ['123ABC'] * self.num_dupes_nan,
+            'ppt_id': ['ppt_101'] * self.num_dupes_nan,
+        })])
+        # concat 150 more rows that have a new time (12 hours later) but are nan for measure value (nan)
+        self.mock_df_101 = pd.concat([self.mock_df_101, pd.DataFrame({
+            'time': pd.date_range('2020-10-29 23:00:17.990000000', periods=self.num_dupes_nan, freq='s'),
+            'measure_value': np.NaN,
+            'dev_id': ['123ABC'] * self.num_dupes_nan,
+            'ppt_id': ['ppt_101'] * self.num_dupes_nan,
         })])
 
         # convert the time column to timestamp format
@@ -321,13 +335,21 @@ class TestDuplicateHandling(unittest.TestCase):
         df = pd.read_csv('./test_data/duplicate_handling/logs/test_duplicate_log.csv')
         current_log = df.loc[df['ppt_id'].isin(["fc101", "fc102"])].sum().to_dict()
         # check if the file has the correct number of rows (base + perf + unclear + nan)
-        self.assertEqual(current_log['total_rows'], 1000 + 100 + 200 + 300)
+        self.assertEqual(current_log['total_rows'],
+                         1000 +
+                         self.num_dupes_perfect +
+                         self.num_dupes_unclear +
+                         self.num_nan) # 150 dupe nas plus 150 new nas
+        breakpoint()
         # check if the file has the correct number of duplicates
-        self.assertEqual(current_log['total_dupes'], 600)
+        self.assertEqual(current_log['total_dupes'],
+                         self.num_perfect +
+                         self.num_unclear +
+                         self.num_dupes_nan)
 
-        self.assertEqual(current_log['perfect'], 100)
-        self.assertEqual(current_log['unclear'], 200 + 300) # unclear with values + unclear with nan
-        self.assertEqual(current_log['nan'], 300)
+        self.assertEqual(current_log['perfect'], self.num_perfect) # 100 dupes + 100 originals
+        self.assertEqual(current_log['unclear'], self.num_unclear + self.num_dupes_nan) # unclear with values + unclear with nan
+        self.assertEqual(current_log['nan'], self.num_nan) # 150 new nan + 150 dupe nan
 
         # check if the log has a note of which participants were removed and how many duplicates were found
         self.assertEqual(df.loc[df['ppt_id'].isin(["fc101", "fc102"])].shape[0], 2)

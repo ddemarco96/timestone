@@ -13,7 +13,7 @@ from file_handler import (
     send_slack_notification, combine_files_and_add_columns, copy_files_to_stage2
 )
 from insights import create_wear_time_summary, get_all_ppts
-from uploader import create_bucket, upload_to_s3
+from uploader import create_bucket, upload_to_s3, get_client
 from estimators import  walking_cost, walking_time
 
 if __name__ == "__main__":
@@ -35,6 +35,7 @@ if __name__ == "__main__":
                         action=argparse.BooleanOptionalAction)
     parser.add_argument('-i', '--insights', action='store_true', help='Calculate insights for the data')
     parser.add_argument('--cleanup', action='store_true', help='Remove the unzipped files after uploading')
+    parser.add_argument('--create', action='store_true', help="Create the bucket before uploading")
     args = parser.parse_args()
 
 
@@ -67,7 +68,8 @@ if __name__ == "__main__":
         print(f"Streams to ingest: {streams}"
               f"\nAll streams: {args.all_streams}"
               f"\nInsights: {args.insights}")
-        file_paths = extract_streams_from_pathlist(file_paths, streams)
+        if not args.upload:
+            file_paths = extract_streams_from_pathlist(file_paths, streams)
 
 
     if args.prep:
@@ -90,10 +92,15 @@ if __name__ == "__main__":
         if args.bucket_name is None:
             raise ValueError("Please provide a name for the Bucket to create")
 
-        # create the bucket
-        s3_client = create_bucket(args.bucket_name)
+        if args.create:
+            # create the bucket
+            s3_client = create_bucket(args.bucket_name)
+        else:
+            # get the client
+            s3_client = get_client("nocklab")
         # upload the files to the bucket
         upload_to_s3(file_paths, args.bucket_name, s3_client)
+        send_slack_notification(f"Uploaded {len(file_paths)} files to {args.bucket_name}")
 
 
     if args.insights:
