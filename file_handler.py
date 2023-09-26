@@ -434,7 +434,14 @@ def smell_test(month, ppt_id=None, dev_id=None, stream=None):
         two_types = all_types.loc[(all_types.unclear > 0) & (all_types.nan > 0)]
         if two_types.shape[0] == 0:
             print("No rows with unclear and nan's found. Do a visual smell test as well.")
-            row = log_df.loc[(log_df.unclear > 0) | (log_df.perfect > 0) | (log_df.nan > 0)].iloc[0]
+            # check if any rows have a dupe or nan in that month
+            any_dupes = sum(log_df.total_dupes > 0) > 0
+            any_nans = sum(log_df.nan > 0) > 0
+            if not any_dupes and not any_nans:
+                print("No duplicates/nans found in this month. Exiting.")
+                return
+            else:
+                row = log_df.loc[(log_df.unclear > 0) | (log_df.perfect > 0) | (log_df.nan > 0)].iloc[0]
         else:
             row = two_types.iloc[0]
     else:

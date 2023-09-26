@@ -7,7 +7,6 @@ import pandas as pd
 from dotenv import load_dotenv
 load_dotenv()
 
-from csv_ingestor import CSVIngestor
 from file_handler import (
     unzip_walk, extract_streams_from_pathlist, raw_to_batch_format, simple_walk, handle_duplicates,
     send_slack_notification, combine_files_and_add_columns, copy_files_to_stage2
