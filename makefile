@@ -10,10 +10,10 @@
 # prep       Process the data file using timestone
 # gzip       Create a gzip of the directory, calculate and print the difference in size
 # upload     Upload the gzipped file to the ec2 server and send a notification after successful upload
-# help       Show this help message
+
 
 # Define the target names
-.PHONY: all prep gzip upload help setup
+.PHONY: all prep gzip upload help setup monitor
 
 # ANSI escape codes for colorful echo output
 GREEN := "\e[1;32m"
@@ -35,6 +35,8 @@ help:
 	@echo "  gzip       Create a gzip of the directory, calculate and print the difference in size"
 	@echo "  upload     Upload the gzipped file to the ec2 server and send a notification after successful upload"
 	@echo "  setup      Set up the folder structure and .env file"
+	@echo "  help       Show this help message"
+	@echo "  monitor    Monitor the upload to timestream"
 
 all:
 	@printf $(GREEN)"\nStarting the prep command..."$(CLEAR)
@@ -79,3 +81,8 @@ upload:
 	@printf $(YELLOW)"\nUploading the gzipped file to the ec2 server and sending a notification after successful upload..."$(CLEAR) && \
 	scp -i ~/.ssh/atheneum-production $(DIR).tar.gz ec2-user@ec2-54-82-45-59.compute-1.amazonaws.com: && \
 	python -c "from file_handler import send_slack_notification; send_slack_notification('upload to ec2 complete')"
+
+monitor:
+	@printf $(YELLOW)"\nMonitoring the upload to timestream..."$(CLEAR) && \
+	while sleep 5; do tasks=$$(aws timestream-write list-batch-load-tasks --query 'BatchLoadTasks[?TaskStatus!=`SUCCEEDED` && TaskStatus!=`FAILED`].[TaskId,TableName,TaskStatus]' --output text --profile=nocklab); if [ -z "$$tasks" ]; then printf $(GREEN)"\n No Tasks still running!\n" $(CLEAR); break; else printf $(YELLOW)"\nTasks still running:\n$$tasks\n" $(CLEAR); fi; done && \
+	python -c "from file_handler import send_slack_notification; send_slack_notification('Upload to timestream complete')"
